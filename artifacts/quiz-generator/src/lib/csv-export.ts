@@ -3,8 +3,6 @@ interface QuizQuestion {
   options: string[];
   correctOptionIndex: number;
   explanation?: string;
-  type?: string;
-  section?: string;
 }
 
 interface QuizData {
@@ -12,9 +10,13 @@ interface QuizData {
   questions: QuizQuestion[];
 }
 
-function csvCell(value: string): string {
+function csvCell(value: string | number): string {
+  if (typeof value === "number") return String(value);
   const escaped = (value ?? "").replace(/"/g, '""');
-  return `"${escaped}"`;
+  if (escaped.includes(",") || escaped.includes('"') || escaped.includes("\n")) {
+    return `"${escaped}"`;
+  }
+  return escaped;
 }
 
 export function exportQuizAsCSV(quiz: QuizData): void {
@@ -24,7 +26,7 @@ export function exportQuizAsCSV(quiz: QuizData): void {
   for (const q of quiz.questions) {
     const opts = [...q.options];
     while (opts.length < 5) opts.push("");
-    const answer = q.options[q.correctOptionIndex] ?? "";
+    const answer = q.correctOptionIndex + 1;
     const row = [
       csvCell(q.question),
       csvCell(opts[0] ?? ""),
@@ -32,10 +34,10 @@ export function exportQuizAsCSV(quiz: QuizData): void {
       csvCell(opts[2] ?? ""),
       csvCell(opts[3] ?? ""),
       csvCell(opts[4] ?? ""),
-      csvCell(answer),
+      answer,
       csvCell(q.explanation ?? ""),
-      csvCell(q.type ?? "mcq"),
-      csvCell(q.section ?? ""),
+      1,
+      1,
     ];
     rows.push(row.join(","));
   }
@@ -46,8 +48,10 @@ export function exportQuizAsCSV(quiz: QuizData): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${quiz.title.replace(/[^a-zA-Z0-9\s\u0980-\u09FF]/g, "").trim() || "quiz"}.csv`;
+  a.download = `${quiz.title.replace(/[^a-zA-Z0-9\s\u0980-\u09FF_-]/g, "").trim() || "quiz"}.csv`;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
@@ -72,9 +76,8 @@ export function exportQuizAsJSON(quiz: QuizData & { id: number; createdAt: strin
       })),
       correctAnswer: q.options[q.correctOptionIndex],
       correctOptionIndex: q.correctOptionIndex,
+      probahoAnswerIndex: q.correctOptionIndex + 1,
       explanation: q.explanation ?? null,
-      type: q.type ?? "mcq",
-      section: q.section ?? null,
     })),
   };
 
@@ -83,7 +86,9 @@ export function exportQuizAsJSON(quiz: QuizData & { id: number; createdAt: strin
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${quiz.title.replace(/[^a-zA-Z0-9\s\u0980-\u09FF]/g, "").trim() || "quiz"}.json`;
+  a.download = `${quiz.title.replace(/[^a-zA-Z0-9\s\u0980-\u09FF_-]/g, "").trim() || "quiz"}.json`;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }

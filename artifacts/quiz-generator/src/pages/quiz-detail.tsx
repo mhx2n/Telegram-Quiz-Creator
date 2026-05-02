@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { format } from "date-fns";
 import {
   ArrowLeft, Send, Download, Trash2, Check, X, Edit2, Loader2, FileText, FileJson,
-  ChevronDown, ChevronUp, Bot, Hash, Clock, AlertCircle, Pencil, Save
+  ChevronDown, ChevronUp, Bot, Hash, Clock, AlertCircle, Pencil, Save, Settings2, Layers, Type
 } from "lucide-react";
 import {
   AlertDialog,
@@ -34,7 +34,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { exportQuizAsPDF } from "@/lib/pdf-export";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { exportQuizAsPDF, defaultPdfOptions, type PdfOptions, type PdfTheme, type PdfContentMode } from "@/lib/pdf-export";
 import { exportQuizAsCSV, exportQuizAsJSON } from "@/lib/csv-export";
 
 interface QuizQuestion {
@@ -87,6 +89,9 @@ export default function QuizDetail() {
   const [draftCorrect, setDraftCorrect] = useState(0);
   const [draftExplanation, setDraftExplanation] = useState("");
 
+  const [showPdfDialog, setShowPdfDialog] = useState(false);
+  const [pdfOptions, setPdfOptions] = useState<PdfOptions>(defaultPdfOptions);
+
   const { data: quiz, isLoading } = useGetQuiz(numId, {
     query: { enabled: !!numId, queryKey: getGetQuizQueryKey(numId) },
   });
@@ -99,16 +104,27 @@ export default function QuizDetail() {
     saveTgSettings(botToken, channelId, questionPrefix, explanationSuffix);
   }, [botToken, channelId, questionPrefix, explanationSuffix]);
 
+  const setPdfOpt = <K extends keyof PdfOptions>(key: K, value: PdfOptions[K]) => {
+    setPdfOptions((prev) => ({ ...prev, [key]: value }));
+  };
+
   const handleExportPDF = () => {
+    setShowPdfDialog(true);
+  };
+
+  const handleDownloadPDF = () => {
     if (!quiz) return;
     try {
-      exportQuizAsPDF({
-        title: quiz.title,
-        questions: quiz.questions as QuizQuestion[],
-        createdAt: quiz.createdAt,
-        telegramChannel: quiz.telegramChannel,
-      });
-      toast({ title: "PDF downloaded successfully" });
+      exportQuizAsPDF(
+        { title: quiz.title, questions: quiz.questions as QuizQuestion[], createdAt: quiz.createdAt, telegramChannel: quiz.telegramChannel },
+        pdfOptions
+      );
+      if (!pdfOptions.separateSheets) {
+        toast({ title: "PDF downloaded" });
+      } else {
+        toast({ title: "2 PDFs downloaded", description: "Question sheet + Answer key" });
+      }
+      setShowPdfDialog(false);
     } catch {
       toast({ title: "PDF export failed", variant: "destructive" });
     }
@@ -668,6 +684,252 @@ export default function QuizDetail() {
               ) : (
                 <><Send className="w-4 h-4 mr-2" /> Post {questions.length} Questions</>
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* PDF Customize Dialog */}
+      <Dialog open={showPdfDialog} onOpenChange={setShowPdfDialog}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="w-4 h-4 text-primary" /> PDF Export Settings
+            </DialogTitle>
+          </DialogHeader>
+          <Tabs defaultValue="style" className="w-full">
+            <TabsList className="w-full grid grid-cols-3">
+              <TabsTrigger value="style" className="flex items-center gap-1.5 text-xs">
+                <Settings2 className="w-3.5 h-3.5" /> Style
+              </TabsTrigger>
+              <TabsTrigger value="content" className="flex items-center gap-1.5 text-xs">
+                <Layers className="w-3.5 h-3.5" /> Content
+              </TabsTrigger>
+              <TabsTrigger value="text" className="flex items-center gap-1.5 text-xs">
+                <Type className="w-3.5 h-3.5" /> Header / Footer
+              </TabsTrigger>
+            </TabsList>
+
+            {/* Style Tab */}
+            <TabsContent value="style" className="space-y-5 pt-3">
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold">Theme</Label>
+                <div className="grid grid-cols-5 gap-2">
+                  {(
+                    [
+                      { id: "teal", label: "Teal", color: "#007B6E" },
+                      { id: "blue", label: "Blue", color: "#2563EB" },
+                      { id: "purple", label: "Purple", color: "#7C3AED" },
+                      { id: "dark", label: "Dark", color: "#1E293B" },
+                      { id: "minimal", label: "Minimal", color: "#000000" },
+                    ] as { id: PdfTheme; label: string; color: string }[]
+                  ).map(({ id, label, color }) => (
+                    <button
+                      key={id}
+                      onClick={() => setPdfOpt("theme", id)}
+                      className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border-2 transition-all text-xs font-medium ${
+                        pdfOptions.theme === id
+                          ? "border-primary bg-primary/5 shadow-sm"
+                          : "border-transparent bg-muted/40 hover:bg-muted/70"
+                      }`}
+                    >
+                      <span
+                        className="w-7 h-7 rounded-full shadow-sm border border-black/10"
+                        style={{ background: color }}
+                      />
+                      {label}
+                      {pdfOptions.theme === id && (
+                        <Check className="w-3 h-3 text-primary" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold">
+                  Watermark Text{" "}
+                  <span className="text-muted-foreground font-normal">(optional)</span>
+                </Label>
+                <Input
+                  placeholder='যেমন: "DRAFT"  বা  "GST Batch 2024"'
+                  value={pdfOptions.watermarkText}
+                  onChange={(e) => setPdfOpt("watermarkText", e.target.value)}
+                  className="text-sm"
+                  maxLength={40}
+                />
+                {pdfOptions.watermarkText && (
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Opacity</span>
+                      <span>{pdfOptions.watermarkOpacity}%</span>
+                    </div>
+                    <Slider
+                      min={5}
+                      max={60}
+                      step={5}
+                      value={[pdfOptions.watermarkOpacity]}
+                      onValueChange={([v]) => setPdfOpt("watermarkOpacity", v)}
+                      className="w-full"
+                    />
+                  </div>
+                )}
+              </div>
+            </TabsContent>
+
+            {/* Content Tab */}
+            <TabsContent value="content" className="space-y-4 pt-3">
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold">Sheet Content</Label>
+                <div className="space-y-2">
+                  {(
+                    [
+                      {
+                        id: "questions",
+                        label: "Questions Only",
+                        desc: "শুধু প্রশ্ন ও অপশন — কোনো সঠিক উত্তর দেখাবে না",
+                        icon: "📋",
+                      },
+                      {
+                        id: "answers",
+                        label: "Questions + Answers",
+                        desc: "সঠিক উত্তর হাইলাইট করা থাকবে, ব্যাখ্যা ছাড়া",
+                        icon: "✅",
+                      },
+                      {
+                        id: "full",
+                        label: "Questions + Answers + Explanation",
+                        desc: "সব কিছু সহ — সঠিক উত্তর ও ব্যাখ্যা",
+                        icon: "📖",
+                      },
+                    ] as { id: PdfContentMode; label: string; desc: string; icon: string }[]
+                  ).map(({ id, label, desc, icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => { setPdfOpt("contentMode", id); setPdfOpt("separateSheets", false); }}
+                      className={`w-full flex items-start gap-3 p-3 rounded-lg border-2 text-left transition-all ${
+                        pdfOptions.contentMode === id && !pdfOptions.separateSheets
+                          ? "border-primary bg-primary/5"
+                          : "border-transparent bg-muted/40 hover:bg-muted/60"
+                      }`}
+                    >
+                      <span className="text-xl shrink-0 mt-0.5">{icon}</span>
+                      <div>
+                        <p className="text-sm font-medium leading-tight">{label}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+                      </div>
+                      {pdfOptions.contentMode === id && !pdfOptions.separateSheets && (
+                        <Check className="w-4 h-4 text-primary ml-auto shrink-0 mt-0.5" />
+                      )}
+                    </button>
+                  ))}
+
+                  {/* Separate sheets option */}
+                  <button
+                    onClick={() => setPdfOpt("separateSheets", !pdfOptions.separateSheets)}
+                    className={`w-full flex items-start gap-3 p-3 rounded-lg border-2 text-left transition-all ${
+                      pdfOptions.separateSheets
+                        ? "border-primary bg-primary/5"
+                        : "border-transparent bg-muted/40 hover:bg-muted/60"
+                    }`}
+                  >
+                    <span className="text-xl shrink-0 mt-0.5">📦</span>
+                    <div>
+                      <p className="text-sm font-medium leading-tight">Separate Sheets</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        2টি আলাদা PDF — একটি শুধু প্রশ্ন, একটি সম্পূর্ণ Answer Key
+                      </p>
+                    </div>
+                    {pdfOptions.separateSheets && (
+                      <Check className="w-4 h-4 text-primary ml-auto shrink-0 mt-0.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* Header / Footer Tab */}
+            <TabsContent value="text" className="space-y-4 pt-3">
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold">Header</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] text-muted-foreground">Left text</Label>
+                    <Input
+                      placeholder="Quiz Generator"
+                      value={pdfOptions.headerLeft}
+                      onChange={(e) => setPdfOpt("headerLeft", e.target.value)}
+                      className="text-sm"
+                      maxLength={60}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] text-muted-foreground">Right text (blank = page no.)</Label>
+                    <Input
+                      placeholder="auto page number"
+                      value={pdfOptions.headerRight}
+                      onChange={(e) => setPdfOpt("headerRight", e.target.value)}
+                      className="text-sm"
+                      maxLength={60}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-xs font-semibold">Footer</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] text-muted-foreground">Left text</Label>
+                  <Input
+                    placeholder="Generated by Telegram Quiz Generator"
+                    value={pdfOptions.footerLeft}
+                    onChange={(e) => setPdfOpt("footerLeft", e.target.value)}
+                    className="text-sm"
+                    maxLength={80}
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id="show-page-numbers"
+                    checked={pdfOptions.showPageNumbers}
+                    onCheckedChange={(v) => setPdfOpt("showPageNumbers", v)}
+                  />
+                  <Label htmlFor="show-page-numbers" className="text-sm cursor-pointer">
+                    Show page numbers (right side)
+                  </Label>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          {/* Preview summary */}
+          <div className="bg-muted/40 rounded-lg px-3 py-2.5 text-xs text-muted-foreground space-y-0.5 mt-1">
+            <div className="font-medium text-foreground text-xs mb-1">Export Summary</div>
+            <div>Theme: <span className="font-medium text-foreground capitalize">{pdfOptions.theme}</span></div>
+            <div>
+              Content:{" "}
+              <span className="font-medium text-foreground">
+                {pdfOptions.separateSheets
+                  ? "Question Sheet + Answer Key (2 files)"
+                  : pdfOptions.contentMode === "questions"
+                  ? "Questions only"
+                  : pdfOptions.contentMode === "answers"
+                  ? "Questions + Answers"
+                  : "Full (Q + A + Explanation)"}
+              </span>
+            </div>
+            {pdfOptions.watermarkText && (
+              <div>Watermark: <span className="font-medium text-foreground">"{pdfOptions.watermarkText}" @ {pdfOptions.watermarkOpacity}%</span></div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setShowPdfDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleDownloadPDF} size="sm" className="gap-2">
+              <Download className="w-4 h-4" />
+              {pdfOptions.separateSheets ? "Download 2 PDFs" : "Download PDF"}
             </Button>
           </DialogFooter>
         </DialogContent>
