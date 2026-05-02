@@ -177,9 +177,13 @@ export default function QuizDetail() {
       for (let i = 0; i < questions.length; i++) {
         setPostingStatus(`Posting question ${i + 1} of ${questions.length}...`);
 
-        const rawQuestion = `${questionPrefix}${questions[i].question}`;
+        const rawQuestion = questionPrefix
+          ? `${questionPrefix}\n${questions[i].question}`
+          : questions[i].question;
         const rawExplanation = questions[i].explanation
-          ? `${questions[i].explanation}${explanationSuffix}`
+          ? (explanationSuffix
+              ? `${questions[i].explanation}\n${explanationSuffix}`
+              : questions[i].explanation)
           : undefined;
 
         const payload = {
