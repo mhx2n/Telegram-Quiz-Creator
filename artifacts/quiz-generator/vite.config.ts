@@ -4,29 +4,22 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-// PORT is only required for the dev server — not during `vite build`.
-const isBuild = process.argv.includes("build");
+// PORT: required for Replit dev server, optional for production builds (Vercel/Netlify).
+// Never throw — just fall back to 3000 so `vite build` always works.
+const port = Number(process.env.PORT ?? "3000");
 
-const rawPort = process.env.PORT;
-if (!isBuild && !rawPort) {
-  throw new Error("PORT environment variable is required but was not provided.");
-}
-const port = Number(rawPort ?? "3000");
-if (!isBuild && (Number.isNaN(port) || port <= 0)) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
-
-// BASE_PATH defaults to "/" for static deployments (Vercel, Netlify, etc.)
+// BASE_PATH: "/" for Vercel/static deploys; Replit workflow always sets this.
 const basePath = process.env.BASE_PATH ?? "/";
+
+const isReplit = Boolean(process.env.REPL_ID);
 
 export default defineConfig({
   base: basePath,
   plugins: [
     react(),
     tailwindcss(),
-    ...(isBuild ? [] : [runtimeErrorOverlay()]),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
+    runtimeErrorOverlay(),
+    ...(isReplit
       ? [
           await import("@replit/vite-plugin-cartographer").then((m) =>
             m.cartographer({
