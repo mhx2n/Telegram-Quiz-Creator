@@ -270,7 +270,6 @@ router.post("/quizzes", async (req, res) => {
     } 
       res.status(500).json({ error: "Quiz generation failed: " + message });
     }
-  }
 });
 
 router.post("/quizzes/:id/add-questions", async (req, res) => {
