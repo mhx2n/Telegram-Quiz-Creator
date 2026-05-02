@@ -260,9 +260,14 @@ router.post("/quizzes", async (req, res) => {
     req.log.error({ err }, "Quiz generation failed");
     if (message.includes("timeout") || message.includes("ETIMEDOUT")) {
       res.status(504).json({ error: "Request timed out. Try fewer questions or smaller image." });
-    } else if (message.includes("insufficient_quota") || message.includes("billing")) {
-      res.status(402).json({ error: "AI service quota exceeded. Please try again later." });
-    } else {
+      return;
+    } 
+    
+    if (message.includes("All AI providers exhausted") || message.includes("rate-limited")) {
+      res.status(503).json({ 
+        error: "All AI keys are exhausted or rate-limited right now. Please try again later.", });
+      return;
+    } 
       res.status(500).json({ error: "Quiz generation failed: " + message });
     }
   }
