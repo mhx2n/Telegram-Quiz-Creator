@@ -5,7 +5,7 @@
   "installCommand": "pnpm install",
   "framework": null,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://YOUR_BACKEND.replit.app/api/$1" },
+    { "source": "/api/(.*)", "destination": "https://telegram-quiz-creator--himel2331.replit.app/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
