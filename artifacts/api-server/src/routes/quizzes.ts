@@ -25,15 +25,63 @@ type QuizQuestion = {
 
 type AIMessage = Parameters<typeof openai.chat.completions.create>[0]["messages"][number];
 
+const CATEGORY_PROMPTS: Record<string, string> = {
+  engineering: `
+CATEGORY: Engineering Admission (BUET, CUET, RUET, KUET, DUET standard)
+- Focus: Physics (mechanics, electricity, optics, modern physics), Chemistry (organic, inorganic, physical), Mathematics (calculus, vectors, trigonometry), ICT
+- Difficulty: High — university entrance level
+- Include: numerical calculations with exact values, conceptual trap questions
+- Physics/Chemistry: equations, formulas, unit conversions must be exact
+- Math: step-by-step solvable within 2 minutes
+`,
+  medical: `
+CATEGORY: Medical Admission (MBBS/BDS Bangladesh standard)
+- Focus: Biology (cell biology, genetics, physiology, anatomy, ecology), Chemistry (organic reactions, biochemistry), Physics (basic)
+- Difficulty: High — MBBS entrance level
+- Include: anatomical facts, physiological processes, biochemical pathways, genetic problems
+- Biological nomenclature must be accurate (Latin/scientific names where needed)
+- Avoid vague options — each wrong option must be a plausible misconception
+`,
+  varsity: `
+CATEGORY: University Admission (DU, RU, CU, JU, NSU, BRAC standard)
+- Focus: Subject-specific analytical questions, reading comprehension, general knowledge, critical thinking
+- Difficulty: Medium-High — general university entrance level
+- Include: analytical reasoning, current affairs, subject theory questions
+- Test deeper understanding, not surface memorization
+`,
+  hsc: `
+CATEGORY: HSC / A-Level standard
+- Focus: Core HSC curriculum — Physics, Chemistry, Biology, Math, Bangla, English, ICT
+- Difficulty: Medium — HSC board exam level
+- Include: chapter-specific conceptual questions, formula-based problems
+- Align with NCTB Bangladesh curriculum
+`,
+  ssc: `
+CATEGORY: SSC / O-Level standard
+- Focus: Core SSC curriculum subjects
+- Difficulty: Medium — SSC board exam level
+- Align with NCTB Bangladesh curriculum for classes 9-10
+`,
+  general: `
+CATEGORY: General Knowledge / Mixed
+- Include diverse topics: science, history, geography, current affairs, language, mathematics
+- Difficulty: Medium — suitable for competitive exams (BCS, bank jobs)
+- Test both factual knowledge and reasoning
+`,
+};
+
 async function generateQuestionsFromMessages(
   messages: AIMessage[],
   count: number,
   language: string,
+  category: string,
   existingQuestions: QuizQuestion[] = []
 ): Promise<QuizQuestion[]> {
+  const catPrompt = CATEGORY_PROMPTS[category] ?? CATEGORY_PROMPTS["general"];
+
   const existingCtx =
     existingQuestions.length > 0
-      ? `\n\nDo NOT repeat these questions that already exist:\n${existingQuestions
+      ? `\n\nDo NOT repeat these questions (already exist):\n${existingQuestions
           .slice(-20)
           .map((q) => `- ${q.question}`)
           .join("\n")}`
@@ -41,15 +89,26 @@ async function generateQuestionsFromMessages(
 
   const systemMsg: AIMessage = {
     role: "system",
-    content: `You are a quiz generator. Generate exactly ${count} multiple choice questions from the provided content. Respond ONLY with valid JSON. The language should be ${language}.${existingCtx}
-Return a JSON array like:
-[{"question":"...","options":["A","B","C","D"],"correctOptionIndex":0,"explanation":"..."}]
-Rules:
-- Each question must have exactly 4 options
-- correctOptionIndex is 0-based (0=A, 1=B, 2=C, 3=D)
-- explanation is required and in ${language}
-- Test understanding, not just memory
-- Output ONLY the JSON array, no markdown, no extra text`,
+    content: `You are an expert quiz creator for Bangladesh academic and competitive exams.
+Generate exactly ${count} multiple choice questions from the provided content.
+Output language: ${language}.
+
+${catPrompt}
+
+STRICT RULES:
+1. Each question MUST have exactly 4 options (A, B, C, D)
+2. correctOptionIndex is 0-based (0=A, 1=B, 2=C, 3=D) — VERIFY THIS IS CORRECT before outputting
+3. The correct answer MUST be factually/scientifically accurate — double-check numerical answers
+4. All 3 wrong options must be plausible distractors (common misconceptions or close values), NOT random
+5. explanation must clearly explain WHY the correct answer is right and why others are wrong (in ${language})
+6. Questions must test UNDERSTANDING, not just memory
+7. For numerical problems: show the correct calculated value in explanation
+8. NEVER make the correct option obviously different in length/style from wrong options
+9. Output ONLY a valid JSON array — no markdown, no extra text, no comments
+
+Return format:
+[{"question":"...","options":["A text","B text","C text","D text"],"correctOptionIndex":0,"explanation":"..."}]
+${existingCtx}`,
   };
 
   const callMessages: AIMessage[] = [systemMsg, ...messages];
@@ -57,26 +116,54 @@ Rules:
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     max_completion_tokens: 16000,
+    temperature: 0.4,
     messages: callMessages,
   });
 
   const raw = response.choices[0]?.message?.content ?? "[]";
-  const cleaned = raw
+
+  // Robust cleanup: strip markdown code fences, trim whitespace
+  let cleaned = raw
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
 
+  // Extract the JSON array portion
   const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-  const jsonStr = jsonMatch ? jsonMatch[0] : cleaned;
+  if (!jsonMatch) {
+    req.log?.warn({ raw }, "AI returned no JSON array");
+    return [];
+  }
+  let jsonStr = jsonMatch[0];
 
-  const parsed = JSON.parse(jsonStr) as QuizQuestion[];
+  // Fix common AI JSON escaping issues:
+  // 1. Remove invalid control chars
+  jsonStr = jsonStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  // 2. Fix lone backslashes that aren't valid escapes
+  jsonStr = jsonStr.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+  // 3. Remove trailing commas before ] or }
+  jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
+
+  let parsed: QuizQuestion[];
+  try {
+    parsed = JSON.parse(jsonStr) as QuizQuestion[];
+  } catch {
+    // Last resort: try to extract valid objects one by one
+    const objMatches = jsonStr.match(/\{[^{}]*"question"[^{}]*\}/g) ?? [];
+    parsed = [];
+    for (const objStr of objMatches) {
+      try { parsed.push(JSON.parse(objStr) as QuizQuestion); } catch {}
+    }
+  }
   return parsed.filter(
     (q) =>
       q.question &&
       Array.isArray(q.options) &&
-      q.options.length >= 2 &&
-      typeof q.correctOptionIndex === "number"
+      q.options.length === 4 &&
+      typeof q.correctOptionIndex === "number" &&
+      q.correctOptionIndex >= 0 &&
+      q.correctOptionIndex <= 3
   );
 }
 
@@ -101,6 +188,7 @@ router.post("/quizzes", async (req, res) => {
     return;
   }
   const { content = "", title, imageBase64, questionCount = 5, language = "Bengali" } = parsed.data;
+  const category = (req.body as Record<string, string>).category ?? "general";
 
   if (!content.trim() && !imageBase64) {
     res.status(400).json({ error: "Please provide text content or an image." });
@@ -125,7 +213,7 @@ router.post("/quizzes", async (req, res) => {
     let allQuestions: QuizQuestion[] = [];
 
     if (questionCount <= BATCH) {
-      allQuestions = await generateQuestionsFromMessages([userMessage], questionCount, language, []);
+      allQuestions = await generateQuestionsFromMessages([userMessage], questionCount, language, category, []);
     } else {
       let batchNum = 0;
       while (allQuestions.length < questionCount) {
@@ -143,10 +231,9 @@ router.post("/quizzes", async (req, res) => {
           : `Generate ${batchSize} quiz questions (batch ${batchNum + 1}) from this content:\n\n${content}`;
 
         const batchMsg: AIMessage = { role: "user", content: batchUserContent };
-        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, allQuestions);
+        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, category, allQuestions);
         allQuestions = [...allQuestions, ...batchResult];
         batchNum++;
-
         if (batchResult.length === 0) break;
       }
     }
@@ -186,9 +273,10 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
   const idNum = parseInt(req.params.id ?? "0", 10);
   if (!idNum) { res.status(400).json({ error: "Invalid id" }); return; }
 
-  const { additionalCount = 5, language = "Bengali" } = req.body as {
+  const { additionalCount = 5, language = "Bengali", category = "general" } = req.body as {
     additionalCount?: number;
     language?: string;
+    category?: string;
   };
 
   const count = Math.max(1, Math.min(50, Number(additionalCount) || 5));
@@ -210,7 +298,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
     let newQuestions: QuizQuestion[] = [];
 
     if (count <= BATCH) {
-      newQuestions = await generateQuestionsFromMessages([userMessage], count, language, existingQuestions);
+      newQuestions = await generateQuestionsFromMessages([userMessage], count, language, category, existingQuestions);
     } else {
       let batchNum = 0;
       const allExisting = [...existingQuestions];
@@ -221,7 +309,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
           role: "user",
           content: `Generate more quiz questions (batch ${batchNum + 1}) from this content:\n\n${sourceContent}`,
         };
-        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, [
+        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, category, [
           ...allExisting,
           ...newQuestions,
         ]);
