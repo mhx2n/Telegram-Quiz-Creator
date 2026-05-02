@@ -126,6 +126,16 @@ router.delete("/quizzes/:id", async (req, res) => {
   res.status(204).send();
 });
 
+router.post("/quizzes/:id/mark-posted", async (req, res) => {
+  const parsed = GetQuizParams.safeParse({ id: req.params.id });
+  if (!parsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  const { channelId } = req.body as { channelId?: string };
+  await db.update(quizzesTable)
+    .set({ postedToTelegram: true, telegramChannel: channelId ?? null, updatedAt: new Date() })
+    .where(eq(quizzesTable.id, parsed.data.id));
+  res.json({ success: true });
+});
+
 router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
   const paramsParsed = PostQuizToTelegramParams.safeParse({ id: req.params.id });
   if (!paramsParsed.success) { res.status(400).json({ error: "Invalid id" }); return; }

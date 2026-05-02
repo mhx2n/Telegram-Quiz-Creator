@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useGenerateQuiz } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -11,7 +11,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { BrainCircuit, Upload, X, Loader2, ImageIcon } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { BrainCircuit, Upload, X, Loader2, ImageIcon, ScanText, CheckCircle2, AlertCircle } from "lucide-react";
+import { extractTextFromImage } from "@/lib/ocr";
+
+type OCRState = "idle" | "loading" | "done" | "error";
 
 export default function CreateQuiz() {
   const [, setLocation] = useLocation();
@@ -25,36 +30,94 @@ export default function CreateQuiz() {
   const [language, setLanguage] = useState("Bengali");
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [ocrState, setOcrState] = useState<OCRState>("idle");
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrConfidence, setOcrConfidence] = useState(0);
 
   const generateQuiz = useGenerateQuiz();
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleImageUpload = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Invalid file type", description: "Please upload an image file.", variant: "destructive" });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum file size is 10MB.", variant: "destructive" });
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const dataUrl = ev.target?.result as string;
       setImagePreview(dataUrl);
       const base64 = dataUrl.split(",")[1];
       setImageBase64(base64);
+      setOcrState("idle");
+      setOcrProgress(0);
     };
     reader.readAsDataURL(file);
+  }, [toast]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleImageUpload(file);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleImageUpload(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
   };
 
   const handleRemoveImage = () => {
     setImageBase64(null);
     setImagePreview(null);
+    setOcrState("idle");
+    setOcrProgress(0);
+    setOcrConfidence(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleRunOCR = async () => {
+    if (!imagePreview) return;
+    setOcrState("loading");
+    setOcrProgress(0);
+    try {
+      const result = await extractTextFromImage(imagePreview, (p) => setOcrProgress(p));
+      if (result.text.length < 10) {
+        toast({ title: "OCR result too short", description: "Could not extract meaningful text. Try a clearer image.", variant: "destructive" });
+        setOcrState("error");
+        return;
+      }
+      setContent((prev) => prev ? `${prev}\n\n--- OCR Extracted Text ---\n${result.text}` : result.text);
+      setOcrConfidence(result.confidence);
+      setOcrState("done");
+      toast({ title: `OCR completed! Confidence: ${result.confidence}%`, description: "Extracted text added to content." });
+    } catch {
+      setOcrState("error");
+      toast({ title: "OCR failed", description: "Could not extract text. Try a different image or paste text manually.", variant: "destructive" });
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!content.trim()) {
-      toast({ title: "Content required", description: "Please enter content to generate a quiz from.", variant: "destructive" });
+      toast({ title: "Content required", description: "Please enter content or run OCR on an image.", variant: "destructive" });
       return;
     }
     generateQuiz.mutate(
-      { content: content.trim(), title: title.trim() || undefined, imageBase64: imageBase64 || undefined, questionCount, language },
+      {
+        data: {
+          content: content.trim(),
+          title: title.trim() || undefined,
+          imageBase64: imageBase64 || undefined,
+          questionCount,
+          language,
+        },
+      },
       {
         onSuccess: (quiz) => {
           queryClient.invalidateQueries({ queryKey: getListQuizzesQueryKey() });
@@ -73,7 +136,7 @@ export default function CreateQuiz() {
     <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Create Quiz</h1>
-        <p className="text-muted-foreground mt-1">Paste your content or upload an image — AI will generate quiz questions.</p>
+        <p className="text-muted-foreground mt-1">Paste content, upload an image with OCR, or both — AI will generate quiz questions.</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -99,36 +162,82 @@ export default function CreateQuiz() {
                 id="content"
                 data-testid="textarea-content"
                 placeholder="Paste your text, article, lesson content, or notes here..."
-                className="min-h-[200px] font-mono text-sm"
+                className="min-h-[180px] font-mono text-sm"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
               />
-              <p className="text-xs text-muted-foreground">{content.length} characters</p>
+              <div className="flex justify-between items-center">
+                <p className="text-xs text-muted-foreground">{content.length} characters</p>
+                {content.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-auto py-1"
+                    onClick={() => setContent("")}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Image (optional)</Label>
+              <div className="flex items-center justify-between">
+                <Label>Image / Page Photo (OCR)</Label>
+                {imagePreview && ocrState === "idle" && (
+                  <Button type="button" size="sm" variant="secondary" onClick={handleRunOCR} className="gap-1.5">
+                    <ScanText className="w-3.5 h-3.5" />
+                    Extract Text (OCR)
+                  </Button>
+                )}
+                {ocrState === "done" && (
+                  <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 border-0 gap-1">
+                    <CheckCircle2 className="w-3 h-3" /> OCR done ({ocrConfidence}% confidence)
+                  </Badge>
+                )}
+                {ocrState === "error" && (
+                  <Badge variant="secondary" className="bg-red-50 text-red-700 border-0 gap-1">
+                    <AlertCircle className="w-3 h-3" /> OCR failed
+                  </Badge>
+                )}
+              </div>
+
               {imagePreview ? (
-                <div className="relative w-full max-w-sm">
-                  <img src={imagePreview} alt="Preview" className="w-full h-48 object-cover rounded-lg border" />
-                  <button
-                    type="button"
-                    onClick={handleRemoveImage}
-                    className="absolute top-2 right-2 bg-background/80 backdrop-blur rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground transition-colors"
-                    data-testid="button-remove-image"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                <div className="relative">
+                  <div className="relative w-full">
+                    <img src={imagePreview} alt="Preview" className="w-full max-h-64 object-contain rounded-lg border bg-muted" />
+                    <button
+                      type="button"
+                      onClick={handleRemoveImage}
+                      className="absolute top-2 right-2 bg-background/80 backdrop-blur rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground transition-colors"
+                      data-testid="button-remove-image"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {ocrState === "loading" && (
+                    <div className="mt-3 space-y-1.5">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Extracting text with OCR...</span>
+                        <span>{ocrProgress}%</span>
+                      </div>
+                      <Progress value={ocrProgress} className="h-1.5" />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div
                   onClick={() => fileInputRef.current?.click()}
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
                   className="border-2 border-dashed rounded-lg p-8 flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors text-muted-foreground"
                   data-testid="dropzone-image"
                 >
                   <ImageIcon className="w-8 h-8 mb-2 opacity-40" />
-                  <span className="text-sm font-medium">Click to upload image</span>
-                  <span className="text-xs mt-1">PNG, JPG, WEBP supported</span>
+                  <span className="text-sm font-medium">Click to upload or drag & drop</span>
+                  <span className="text-xs mt-1">PNG, JPG, WEBP • Max 10MB</span>
+                  <span className="text-xs mt-1 text-primary/70 flex items-center gap-1"><ScanText className="w-3 h-3" /> Supports Bengali & English OCR</span>
                 </div>
               )}
               <input
@@ -136,7 +245,7 @@ export default function CreateQuiz() {
                 type="file"
                 accept="image/*"
                 className="hidden"
-                onChange={handleImageUpload}
+                onChange={handleFileChange}
                 data-testid="input-image-file"
               />
             </div>
@@ -164,6 +273,7 @@ export default function CreateQuiz() {
               />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>1</span>
+                <span>10</span>
                 <span>25</span>
                 <span>50</span>
               </div>
@@ -189,7 +299,7 @@ export default function CreateQuiz() {
           type="submit"
           size="lg"
           className="w-full"
-          disabled={generateQuiz.isPending || !content.trim()}
+          disabled={generateQuiz.isPending || (!content.trim() && !imageBase64)}
           data-testid="button-generate-quiz"
         >
           {generateQuiz.isPending ? (
@@ -200,7 +310,7 @@ export default function CreateQuiz() {
           ) : (
             <>
               <BrainCircuit className="w-4 h-4 mr-2" />
-              Generate Quiz
+              Generate {questionCount} Questions
             </>
           )}
         </Button>
