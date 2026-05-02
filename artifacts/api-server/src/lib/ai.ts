@@ -60,7 +60,7 @@ function buildProviders(): ProviderConfig[] {
         apiKey: key,
         baseURL: GEMINI_BASE_URL,
       }),
-      model: process.env.GEMINI_MODEL?.trim() || "gemini-3-flash-preview",
+      model: process.env.GEMINI_MODEL?.trim() || "gemini-2.0-flash",
       supportsVision: true,
     });
   }
