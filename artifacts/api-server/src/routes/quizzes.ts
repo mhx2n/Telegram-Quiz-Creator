@@ -16,6 +16,70 @@ import { openai } from "@workspace/integrations-openai-ai-server";
 
 const router = Router();
 
+type QuizQuestion = {
+  question: string;
+  options: string[];
+  correctOptionIndex: number;
+  explanation?: string;
+};
+
+type AIMessage = Parameters<typeof openai.chat.completions.create>[0]["messages"][number];
+
+async function generateQuestionsFromMessages(
+  messages: AIMessage[],
+  count: number,
+  language: string,
+  existingQuestions: QuizQuestion[] = []
+): Promise<QuizQuestion[]> {
+  const existingCtx =
+    existingQuestions.length > 0
+      ? `\n\nDo NOT repeat these questions that already exist:\n${existingQuestions
+          .slice(-20)
+          .map((q) => `- ${q.question}`)
+          .join("\n")}`
+      : "";
+
+  const systemMsg: AIMessage = {
+    role: "system",
+    content: `You are a quiz generator. Generate exactly ${count} multiple choice questions from the provided content. Respond ONLY with valid JSON. The language should be ${language}.${existingCtx}
+Return a JSON array like:
+[{"question":"...","options":["A","B","C","D"],"correctOptionIndex":0,"explanation":"..."}]
+Rules:
+- Each question must have exactly 4 options
+- correctOptionIndex is 0-based (0=A, 1=B, 2=C, 3=D)
+- explanation is required and in ${language}
+- Test understanding, not just memory
+- Output ONLY the JSON array, no markdown, no extra text`,
+  };
+
+  const callMessages: AIMessage[] = [systemMsg, ...messages];
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    max_completion_tokens: 16000,
+    messages: callMessages,
+  });
+
+  const raw = response.choices[0]?.message?.content ?? "[]";
+  const cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+  const jsonStr = jsonMatch ? jsonMatch[0] : cleaned;
+
+  const parsed = JSON.parse(jsonStr) as QuizQuestion[];
+  return parsed.filter(
+    (q) =>
+      q.question &&
+      Array.isArray(q.options) &&
+      q.options.length >= 2 &&
+      typeof q.correctOptionIndex === "number"
+  );
+}
+
 router.get("/quizzes", async (req, res) => {
   const quizzes = await db.select().from(quizzesTable).orderBy(quizzesTable.createdAt);
   res.json(quizzes.map(formatQuiz));
@@ -44,74 +108,51 @@ router.post("/quizzes", async (req, res) => {
   }
 
   try {
-    const messages: Array<{ role: "user" | "system"; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [
-      {
-        role: "system",
-        content: `You are a quiz generator. Generate exactly ${questionCount} multiple choice questions from the provided content. Respond ONLY with valid JSON. The language of the quiz questions and answers should be in ${language}. Return a JSON array like:
-[{"question":"...","options":["A","B","C","D"],"correctOptionIndex":0,"explanation":"..."}]
-Rules:
-- Each question must have exactly 4 options
-- correctOptionIndex is 0-based (0=A, 1=B, 2=C, 3=D)
-- explanation field is required and should be in ${language}
-- Questions should test understanding, not just facts
-- Do not include any text outside the JSON array
-- Do not wrap in markdown code blocks`,
-      },
-    ];
-
     const userText = content?.trim()
-      ? `Generate ${questionCount} quiz questions from this content:\n\n${content}`
-      : `Generate ${questionCount} quiz questions from the image.`;
+      ? `Generate quiz questions from this content:\n\n${content}`
+      : `Generate quiz questions from the image.`;
 
-    if (imageBase64) {
-      messages.push({
-        role: "user",
-        content: [
-          { type: "text", text: userText },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
-        ],
-      });
+    const baseUserContent: AIMessage["content"] = imageBase64
+      ? [
+          { type: "text" as const, text: userText },
+          { type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+        ]
+      : userText;
+
+    const userMessage: AIMessage = { role: "user", content: baseUserContent };
+
+    const BATCH = 20;
+    let allQuestions: QuizQuestion[] = [];
+
+    if (questionCount <= BATCH) {
+      allQuestions = await generateQuestionsFromMessages([userMessage], questionCount, language, []);
     } else {
-      messages.push({ role: "user", content: userText });
+      let batchNum = 0;
+      while (allQuestions.length < questionCount) {
+        const remaining = questionCount - allQuestions.length;
+        const batchSize = Math.min(BATCH, remaining);
+
+        const batchUserContent: AIMessage["content"] = imageBase64
+          ? [
+              {
+                type: "text" as const,
+                text: `Generate ${batchSize} quiz questions (batch ${batchNum + 1}) from this content:\n\n${content || "the image"}`,
+              },
+              { type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+            ]
+          : `Generate ${batchSize} quiz questions (batch ${batchNum + 1}) from this content:\n\n${content}`;
+
+        const batchMsg: AIMessage = { role: "user", content: batchUserContent };
+        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, allQuestions);
+        allQuestions = [...allQuestions, ...batchResult];
+        batchNum++;
+
+        if (batchResult.length === 0) break;
+      }
     }
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      max_completion_tokens: 16000,
-      messages: messages as Parameters<typeof openai.chat.completions.create>[0]["messages"],
-    });
-
-    const raw = response.choices[0]?.message?.content ?? "[]";
-    let questions: Array<{ question: string; options: string[]; correctOptionIndex: number; explanation?: string }> = [];
-
-    const cleaned = raw
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-    const jsonStr = jsonMatch ? jsonMatch[0] : cleaned;
-
-    try {
-      questions = JSON.parse(jsonStr);
-    } catch {
-      req.log.error({ raw: raw.slice(0, 500) }, "Failed to parse AI JSON response");
-      res.status(500).json({ error: "AI returned an invalid response. Please try again." });
-      return;
-    }
-
-    if (!Array.isArray(questions) || questions.length === 0) {
+    if (!allQuestions || allQuestions.length === 0) {
       res.status(500).json({ error: "AI returned no questions. Try with more detailed content." });
-      return;
-    }
-
-    const validQuestions = questions.filter(
-      (q) => q.question && Array.isArray(q.options) && q.options.length >= 2 && typeof q.correctOptionIndex === "number"
-    );
-
-    if (validQuestions.length === 0) {
-      res.status(500).json({ error: "AI returned malformed questions. Please try again." });
       return;
     }
 
@@ -121,8 +162,8 @@ Rules:
       .values({
         title: quizTitle,
         sourceContent: content,
-        questions: validQuestions,
-        questionCount: validQuestions.length,
+        questions: allQuestions,
+        questionCount: allQuestions.length,
         postedToTelegram: false,
       })
       .returning();
@@ -138,6 +179,75 @@ Rules:
     } else {
       res.status(500).json({ error: "Quiz generation failed: " + message });
     }
+  }
+});
+
+router.post("/quizzes/:id/add-questions", async (req, res) => {
+  const idNum = parseInt(req.params.id ?? "0", 10);
+  if (!idNum) { res.status(400).json({ error: "Invalid id" }); return; }
+
+  const { additionalCount = 5, language = "Bengali" } = req.body as {
+    additionalCount?: number;
+    language?: string;
+  };
+
+  const count = Math.max(1, Math.min(50, Number(additionalCount) || 5));
+
+  const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, idNum));
+  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+
+  try {
+    const existingQuestions = (quiz.questions ?? []) as QuizQuestion[];
+    const sourceContent = quiz.sourceContent ?? "";
+
+    const userText = sourceContent.trim()
+      ? `Generate more quiz questions from this content:\n\n${sourceContent}`
+      : `Generate ${count} more diverse quiz questions on the same topics as these existing questions.`;
+
+    const userMessage: AIMessage = { role: "user", content: userText };
+
+    const BATCH = 20;
+    let newQuestions: QuizQuestion[] = [];
+
+    if (count <= BATCH) {
+      newQuestions = await generateQuestionsFromMessages([userMessage], count, language, existingQuestions);
+    } else {
+      let batchNum = 0;
+      const allExisting = [...existingQuestions];
+      while (newQuestions.length < count) {
+        const remaining = count - newQuestions.length;
+        const batchSize = Math.min(BATCH, remaining);
+        const batchMsg: AIMessage = {
+          role: "user",
+          content: `Generate more quiz questions (batch ${batchNum + 1}) from this content:\n\n${sourceContent}`,
+        };
+        const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, [
+          ...allExisting,
+          ...newQuestions,
+        ]);
+        newQuestions = [...newQuestions, ...batchResult];
+        batchNum++;
+        if (batchResult.length === 0) break;
+      }
+    }
+
+    if (newQuestions.length === 0) {
+      res.status(500).json({ error: "Failed to generate additional questions." });
+      return;
+    }
+
+    const merged = [...existingQuestions, ...newQuestions];
+    const [updated] = await db
+      .update(quizzesTable)
+      .set({ questions: merged, questionCount: merged.length, updatedAt: new Date() })
+      .where(eq(quizzesTable.id, idNum))
+      .returning();
+
+    res.json({ ...formatQuiz(updated), addedCount: newQuestions.length });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    req.log.error({ err }, "Add questions failed");
+    res.status(500).json({ error: "Failed to generate questions: " + message });
   }
 });
 
@@ -192,7 +302,7 @@ router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
   if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
 
   const { botToken, channelId, questionIndex } = bodyParsed.data;
-  const questions = quiz.questions as Array<{ question: string; options: string[]; correctOptionIndex: number; explanation?: string }>;
+  const questions = quiz.questions as QuizQuestion[];
   const toPost = questionIndex != null ? [questions[questionIndex]].filter(Boolean) : questions;
 
   const messageIds: number[] = [];
@@ -232,7 +342,7 @@ router.get("/quizzes/:id/export", async (req, res) => {
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, paramsParsed.data.id));
   if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
 
-  const questions = quiz.questions as Array<{ question: string; options: string[]; correctOptionIndex: number; explanation?: string }>;
+  const questions = quiz.questions as QuizQuestion[];
   const format = queryParsed.data.format;
 
   if (format === "json") {

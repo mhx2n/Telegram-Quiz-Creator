@@ -1,4 +1,5 @@
 import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 
 interface QuizQuestion {
   question: string;
@@ -41,311 +42,308 @@ export const defaultPdfOptions: PdfOptions = {
   separateSheets: false,
 };
 
-interface ThemeColors {
-  primary: [number, number, number];
-  correctBg: [number, number, number];
-  correctText: [number, number, number];
-  expBg: [number, number, number];
-  expText: [number, number, number];
-  headerBg: [number, number, number];
-  headerFg: [number, number, number];
-  footerBg: [number, number, number];
-  qBg: [number, number, number];
-  qBorder: [number, number, number];
-  lineColor: [number, number, number];
+interface ThemeCSS {
+  primary: string;
+  headerBg: string;
+  headerFg: string;
+  qBg: string;
+  qBorder: string;
+  correctBg: string;
+  correctText: string;
+  expBg: string;
+  expText: string;
+  divider: string;
 }
 
-const THEMES: Record<PdfTheme, ThemeColors> = {
+const THEMES: Record<PdfTheme, ThemeCSS> = {
   teal: {
-    primary: [0, 123, 110],
-    correctBg: [209, 250, 229],
-    correctText: [6, 95, 70],
-    expBg: [239, 246, 255],
-    expText: [29, 78, 216],
-    headerBg: [0, 123, 110],
-    headerFg: [255, 255, 255],
-    footerBg: [240, 242, 241],
-    qBg: [247, 250, 249],
-    qBorder: [200, 220, 217],
-    lineColor: [0, 123, 110],
+    primary: "#007B6E",
+    headerBg: "#007B6E", headerFg: "#fff",
+    qBg: "#f7faf9", qBorder: "#c8dcda",
+    correctBg: "#d1fae5", correctText: "#065f46",
+    expBg: "#eff6ff", expText: "#1d4ed8",
+    divider: "#007B6E",
   },
   blue: {
-    primary: [37, 99, 235],
-    correctBg: [219, 234, 254],
-    correctText: [29, 78, 216],
-    expBg: [240, 249, 255],
-    expText: [14, 116, 144],
-    headerBg: [37, 99, 235],
-    headerFg: [255, 255, 255],
-    footerBg: [241, 245, 249],
-    qBg: [248, 250, 252],
-    qBorder: [203, 213, 225],
-    lineColor: [37, 99, 235],
+    primary: "#2563EB",
+    headerBg: "#2563EB", headerFg: "#fff",
+    qBg: "#f8fafc", qBorder: "#cbd5e1",
+    correctBg: "#dbeafe", correctText: "#1d4ed8",
+    expBg: "#f0f9ff", expText: "#0e7490",
+    divider: "#2563EB",
   },
   purple: {
-    primary: [124, 58, 237],
-    correctBg: [237, 233, 254],
-    correctText: [109, 40, 217],
-    expBg: [250, 245, 255],
-    expText: [126, 34, 206],
-    headerBg: [124, 58, 237],
-    headerFg: [255, 255, 255],
-    footerBg: [245, 243, 255],
-    qBg: [250, 248, 255],
-    qBorder: [216, 180, 254],
-    lineColor: [124, 58, 237],
+    primary: "#7C3AED",
+    headerBg: "#7C3AED", headerFg: "#fff",
+    qBg: "#faf8ff", qBorder: "#d8b4fe",
+    correctBg: "#ede9fe", correctText: "#6d28d9",
+    expBg: "#faf5ff", expText: "#7e22ce",
+    divider: "#7C3AED",
   },
   dark: {
-    primary: [30, 41, 59],
-    correctBg: [220, 252, 231],
-    correctText: [6, 95, 70],
-    expBg: [241, 245, 249],
-    expText: [51, 65, 85],
-    headerBg: [15, 23, 42],
-    headerFg: [255, 255, 255],
-    footerBg: [30, 41, 59],
-    qBg: [248, 250, 252],
-    qBorder: [148, 163, 184],
-    lineColor: [71, 85, 105],
+    primary: "#1e293b",
+    headerBg: "#0f172a", headerFg: "#e2e8f0",
+    qBg: "#f8fafc", qBorder: "#94a3b8",
+    correctBg: "#dcfce7", correctText: "#065f46",
+    expBg: "#f1f5f9", expText: "#334155",
+    divider: "#475569",
   },
   minimal: {
-    primary: [0, 0, 0],
-    correctBg: [243, 255, 243],
-    correctText: [0, 100, 0],
-    expBg: [250, 250, 250],
-    expText: [80, 80, 80],
-    headerBg: [255, 255, 255],
-    headerFg: [0, 0, 0],
-    footerBg: [255, 255, 255],
-    qBg: [255, 255, 255],
-    qBorder: [200, 200, 200],
-    lineColor: [0, 0, 0],
+    primary: "#000",
+    headerBg: "#f8f8f8", headerFg: "#000",
+    qBg: "#fff", qBorder: "#e0e0e0",
+    correctBg: "#f0fff0", correctText: "#006400",
+    expBg: "#fafafa", expText: "#555",
+    divider: "#000",
   },
 };
 
-function buildDoc(
-  quiz: QuizData,
-  opts: PdfOptions,
-  mode: PdfContentMode,
-  sheetLabel?: string
-): jsPDF {
-  const t = THEMES[opts.theme];
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const margin = 14;
-  const contentW = pageW - margin * 2;
-  let y = margin;
-
-  const drawWatermark = () => {
-    if (!opts.watermarkText.trim()) return;
-    const opacity = Math.max(1, Math.min(100, opts.watermarkOpacity)) / 100;
-    const gray = Math.round(255 - (255 - 180) * opacity);
-    doc.setTextColor(gray, gray, gray);
-    doc.setFontSize(52);
-    doc.setFont("helvetica", "bold");
-    doc.text(opts.watermarkText, pageW / 2, pageH / 2, {
-      align: "center",
-      angle: 45,
-    });
-    doc.setTextColor(0, 0, 0);
-  };
-
-  const drawHeader = () => {
-    const isMinimal = opts.theme === "minimal";
-    if (isMinimal) {
-      doc.setDrawColor(...t.lineColor);
-      doc.setLineWidth(0.8);
-      doc.line(margin, margin + 10, pageW - margin, margin + 10);
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "normal");
-      const leftH = opts.headerLeft || "Quiz";
-      doc.text(leftH, margin, margin + 7);
-      const rightH = opts.headerRight || `Page ${doc.getCurrentPageInfo().pageNumber}`;
-      doc.text(rightH, pageW - margin, margin + 7, { align: "right" });
-      y = margin + 14;
-    } else {
-      doc.setFillColor(...t.headerBg);
-      doc.rect(0, 0, pageW, 11, "F");
-      doc.setTextColor(...t.headerFg);
-      doc.setFontSize(7.5);
-      doc.setFont("helvetica", "bold");
-      const leftH = opts.headerLeft || "Quiz Generator";
-      doc.text(leftH, margin, 7.5);
-      const rightH = opts.headerRight || (opts.showPageNumbers ? `Page ${doc.getCurrentPageInfo().pageNumber}` : "");
-      if (rightH) doc.text(rightH, pageW - margin, 7.5, { align: "right" });
-      doc.setTextColor(0, 0, 0);
-      y = Math.max(y, 14);
-    }
-  };
-
-  const drawFooter = (pageNum: number, totalPages: number) => {
-    const isMinimal = opts.theme === "minimal";
-    if (isMinimal) {
-      doc.setDrawColor(...t.lineColor);
-      doc.setLineWidth(0.4);
-      doc.line(margin, pageH - 10, pageW - margin, pageH - 10);
-      doc.setTextColor(120, 120, 120);
-      doc.setFontSize(7.5);
-      doc.setFont("helvetica", "normal");
-      const fl = opts.footerLeft || "Telegram Quiz Generator";
-      doc.text(fl, margin, pageH - 5);
-      if (opts.showPageNumbers) doc.text(`${pageNum} / ${totalPages}`, pageW - margin, pageH - 5, { align: "right" });
-    } else {
-      doc.setFillColor(...t.footerBg);
-      doc.rect(0, pageH - 10, pageW, 10, "F");
-      const isDark = opts.theme === "dark";
-      doc.setTextColor(isDark ? 180 : 100, isDark ? 180 : 100, isDark ? 180 : 100);
-      doc.setFontSize(7.5);
-      doc.setFont("helvetica", "normal");
-      const fl = opts.footerLeft || "Generated by Telegram Quiz Generator";
-      doc.text(fl, margin, pageH - 3.5);
-      if (opts.showPageNumbers) doc.text(`${pageNum} / ${totalPages}`, pageW - margin, pageH - 3.5, { align: "right" });
-    }
-  };
-
-  const addPage = () => {
-    doc.addPage();
-    drawWatermark();
-    y = margin;
-    drawHeader();
-  };
-
-  const checkPage = (needed: number) => {
-    if (y + needed > pageH - 14) addPage();
-  };
-
-  drawWatermark();
-  drawHeader();
-
-  const isMinimal = opts.theme === "minimal";
-  doc.setDrawColor(...t.lineColor);
-  if (!isMinimal) {
-    doc.setFillColor(...t.primary);
-    doc.roundedRect(margin - 2, y, contentW + 4, 14, 2, 2, "F");
-    doc.setTextColor(255, 255, 255);
-  } else {
-    doc.setTextColor(0, 0, 0);
-  }
-  doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
-  const titleLabel = sheetLabel ? `${quiz.title} — ${sheetLabel}` : quiz.title;
-  const titleLines = doc.splitTextToSize(titleLabel, contentW - 6);
-  doc.text(titleLines, margin + 1, y + 9);
-  y += titleLines.length * 7 + 8;
-
-  doc.setTextColor(100, 100, 100);
-  doc.setFontSize(8.5);
-  doc.setFont("helvetica", "normal");
-  const dateStr = new Date(quiz.createdAt).toLocaleDateString("en-GB", { year: "numeric", month: "long", day: "numeric" });
-  const subtitle = `${quiz.questions.length} Questions  •  ${dateStr}${quiz.telegramChannel ? `  •  ${quiz.telegramChannel}` : ""}`;
-  doc.text(subtitle, margin, y);
-  y += 6;
-
-  doc.setDrawColor(...t.lineColor);
-  doc.setLineWidth(0.5);
-  doc.line(margin, y, pageW - margin, y);
-  y += 5;
-
-  const letters = ["A", "B", "C", "D", "E", "F"];
-
-  quiz.questions.forEach((q, i) => {
-    const showAnswers = mode === "answers" || mode === "full";
-    const showExplanation = mode === "full" && !!q.explanation;
-
-    const qLines = doc.splitTextToSize(`Q${i + 1}.  ${q.question}`, contentW - 10);
-    const optBlocks = q.options.map((opt, j) => {
-      const lines = doc.splitTextToSize(`  ${letters[j]}.  ${opt}`, contentW - 14);
-      return { lines, isCorrect: j === q.correctOptionIndex };
-    });
-    const expLines = showExplanation && q.explanation
-      ? doc.splitTextToSize(`Explanation: ${q.explanation}`, contentW - 10)
-      : [];
-
-    const qH = 4 + qLines.length * 5.2;
-    const optH = optBlocks.reduce((s, b) => s + b.lines.length * 4.3 + 1.5, 0);
-    const expH = expLines.length > 0 ? expLines.length * 4.3 + 6 : 0;
-    const blockH = qH + optH + expH + 8;
-    checkPage(blockH);
-
-    doc.setFillColor(...t.qBg);
-    doc.setDrawColor(...t.qBorder);
-    doc.setLineWidth(0.3);
-    doc.roundedRect(margin - 2, y, contentW + 4, blockH, 2, 2, "FD");
-
-    doc.setFillColor(...t.primary);
-    doc.circle(margin + 3.5, y + 4.5, 3.2, "F");
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(6.5);
-    doc.setFont("helvetica", "bold");
-    doc.text(`${i + 1}`, margin + 3.5, y + 5.3, { align: "center" });
-
-    doc.setTextColor(20, 20, 20);
-    doc.setFontSize(9.5);
-    doc.setFont("helvetica", "bold");
-    doc.text(qLines, margin + 8, y + 4.5);
-    y += qH;
-
-    optBlocks.forEach(({ lines, isCorrect }) => {
-      const showHighlight = showAnswers && isCorrect;
-      if (showHighlight) {
-        doc.setFillColor(...t.correctBg);
-        doc.setDrawColor(...t.correctText);
-        doc.setLineWidth(0.2);
-        doc.roundedRect(margin + 2, y - 0.5, contentW - 2, lines.length * 4.3 + 1.5, 1, 1, "FD");
-        doc.setTextColor(...t.correctText);
-        doc.setFont("helvetica", "bold");
-      } else {
-        doc.setTextColor(55, 55, 55);
-        doc.setFont("helvetica", "normal");
-      }
-      doc.setFontSize(8.5);
-      doc.text(lines, margin + 6, y + 3);
-      if (showHighlight) {
-        doc.setFontSize(9);
-        doc.text("✓", pageW - margin - 4, y + 3);
-      }
-      y += lines.length * 4.3 + 1.5;
-    });
-
-    if (expLines.length > 0) {
-      y += 2;
-      doc.setFillColor(...t.expBg);
-      doc.setDrawColor(...t.expText);
-      doc.setLineWidth(0.2);
-      doc.roundedRect(margin + 2, y - 0.5, contentW - 2, expLines.length * 4.3 + 3, 1, 1, "FD");
-      doc.setTextColor(...t.expText);
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "italic");
-      doc.text(expLines, margin + 5, y + 2.5);
-      y += expLines.length * 4.3 + 5;
-    }
-
-    y += 6;
-  });
-
-  const total = (doc.internal as unknown as { getNumberOfPages: () => number }).getNumberOfPages();
-  for (let pg = 1; pg <= total; pg++) {
-    doc.setPage(pg);
-    drawFooter(pg, total);
-  }
-
-  return doc;
+function escH(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function safeName(title: string) {
   return title.replace(/[^a-zA-Z0-9\s\u0980-\u09FF_-]/g, "").trim() || "quiz";
 }
 
-export function exportQuizAsPDF(quiz: QuizData, opts: PdfOptions = defaultPdfOptions): void {
+function buildHTML(quiz: QuizData, opts: PdfOptions, mode: PdfContentMode, sheetLabel?: string): string {
+  const t = THEMES[opts.theme];
+  const showAnswers = mode === "answers" || mode === "full";
+  const showExpl = mode === "full";
+  const letters = ["A", "B", "C", "D", "E"];
+  const isMinimal = opts.theme === "minimal";
+  const title = sheetLabel ? `${quiz.title} — ${sheetLabel}` : quiz.title;
+  const date = new Date(quiz.createdAt).toLocaleDateString("en-GB", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  const questionsHTML = quiz.questions.map((q, i) => {
+    const optionsHTML = q.options.map((opt, j) => {
+      const isCorrect = j === q.correctOptionIndex && showAnswers;
+      return `<div class="opt${isCorrect ? " cor" : ""}">
+        <span class="ol">${letters[j]}.</span>
+        <span class="ot">${escH(opt)}</span>
+        ${isCorrect ? `<span class="chk">✓</span>` : ""}
+      </div>`;
+    }).join("");
+
+    const explHTML =
+      showExpl && q.explanation
+        ? `<div class="expl">💡 ${escH(q.explanation)}</div>`
+        : "";
+
+    return `<div class="qb">
+      <div class="qh">
+        <span class="qnum">${i + 1}</span>
+        <span class="qtext">${escH(q.question)}</span>
+      </div>
+      <div class="opts">${optionsHTML}</div>
+      ${explHTML}
+    </div>`;
+  }).join("");
+
+  const wmOpacity = Math.max(1, Math.min(60, opts.watermarkOpacity)) / 100;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', 'Noto Sans Bengali', 'SolaimanLipi', 'Kalpurush',
+               'Vrinda', 'Arial Unicode MS', Arial, sans-serif;
+  font-size: 13px; background: #fff; color: #1a1a1a;
+  width: 780px; min-height: 1px;
+}
+.wrap { padding: 18px 24px 20px; position: relative; overflow: hidden; }
+.wm {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  font-size: 72px; font-weight: 900;
+  color: rgba(140,140,140,${wmOpacity});
+  pointer-events: none; white-space: nowrap; z-index: 99;
+  letter-spacing: 6px;
+  font-family: Arial, sans-serif;
+}
+.hdr {
+  background: ${t.headerBg};
+  color: ${t.headerFg};
+  padding: 7px 14px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  border-radius: ${isMinimal ? "0" : "4px 4px 0 0"};
+  ${isMinimal ? "border-bottom: 2px solid #000;" : ""}
+  font-family: Arial, sans-serif;
+}
+.ttl {
+  background: ${isMinimal ? "#fff" : t.primary};
+  color: ${isMinimal ? "#000" : "#fff"};
+  padding: ${isMinimal ? "10px 14px 6px" : "11px 14px"};
+  font-size: 15px; font-weight: 700; line-height: 1.35;
+  border-radius: ${isMinimal ? "0" : "0 0 4px 4px"};
+  ${isMinimal ? "border-bottom: 1.5px solid #000;" : ""}
+}
+.meta { font-size: 10px; color: #888; margin: 6px 0 10px; font-family: Arial, sans-serif; }
+.div { height: 1.5px; background: ${t.divider}; opacity: 0.2; margin-bottom: 12px; }
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.qb {
+  background: ${t.qBg};
+  border: 1px solid ${t.qBorder};
+  border-radius: 6px; padding: 9px 11px;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.qh { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 7px; }
+.qnum {
+  background: ${t.primary}; color: #fff;
+  border-radius: 50%; min-width: 19px; height: 19px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 8px; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+  font-family: Arial, sans-serif;
+}
+.qtext { font-size: 11px; font-weight: 600; line-height: 1.45; color: #111; }
+.opts { display: flex; flex-direction: column; gap: 2.5px; }
+.opt {
+  display: flex; align-items: flex-start; gap: 4px;
+  padding: 3px 6px; border-radius: 3px;
+  font-size: 10px; line-height: 1.4; color: #444;
+}
+.opt.cor {
+  background: ${t.correctBg}; color: ${t.correctText};
+  font-weight: 600; border: 1px solid ${t.correctText}30;
+}
+.ol { font-weight: 700; min-width: 14px; flex-shrink: 0; font-family: Arial, sans-serif; }
+.ot { flex: 1; }
+.chk { margin-left: auto; flex-shrink: 0; font-family: Arial, sans-serif; font-size: 11px; }
+.expl {
+  margin-top: 6px; padding: 4px 7px;
+  background: ${t.expBg}; color: ${t.expText};
+  font-size: 9.5px; border-radius: 4px; line-height: 1.4;
+  border-left: 2px solid ${t.expText}70;
+}
+.ftr {
+  margin-top: 14px; padding-top: 6px;
+  border-top: 1px solid #e0e0e0;
+  display: flex; justify-content: space-between;
+  font-size: 9px; color: #aaa;
+  font-family: Arial, sans-serif;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  ${opts.watermarkText ? `<div class="wm">${escH(opts.watermarkText)}</div>` : ""}
+  <div class="hdr">
+    <span>${escH(opts.headerLeft || "Telegram Quiz Generator")}</span>
+    <span>${escH(opts.headerRight || "")}</span>
+  </div>
+  <div class="ttl">${escH(title)}</div>
+  <div class="meta">
+    ${quiz.questions.length} Questions &nbsp;•&nbsp; ${date}
+    ${quiz.telegramChannel ? ` &nbsp;•&nbsp; ${escH(quiz.telegramChannel)}` : ""}
+  </div>
+  <div class="div"></div>
+  <div class="grid">${questionsHTML}</div>
+  <div class="ftr">
+    <span>${escH(opts.footerLeft || "Generated by Telegram Quiz Generator")}</span>
+    <span></span>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+async function renderToPDF(html: string, opts: PdfOptions, filename: string): Promise<void> {
+  const A4_W = 780;
+  const A4_H_SLICE = 1060;
+  const SCALE = 2;
+
+  const container = document.createElement("div");
+  container.style.cssText = `
+    position: fixed; top: -99999px; left: 0;
+    width: ${A4_W}px;
+    background: #ffffff;
+    overflow: visible;
+  `;
+  container.innerHTML = html;
+  document.body.appendChild(container);
+
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+
+    const canvas = await html2canvas(container, {
+      scale: SCALE,
+      width: A4_W,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      backgroundColor: "#ffffff",
+      windowWidth: A4_W,
+      removeContainer: false,
+    });
+
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const PAGE_W_MM = 210;
+    const PAGE_H_MM = 297;
+    const pageSliceH = A4_H_SLICE * SCALE;
+    const totalPages = Math.ceil(canvas.height / pageSliceH);
+
+    for (let p = 0; p < totalPages; p++) {
+      if (p > 0) doc.addPage();
+
+      const startY = p * pageSliceH;
+      const sliceH = Math.min(pageSliceH, canvas.height - startY);
+
+      const pageCanvas = document.createElement("canvas");
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = pageSliceH;
+      const ctx = pageCanvas.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      ctx.drawImage(
+        canvas,
+        0, startY, canvas.width, sliceH,
+        0, 0, canvas.width, sliceH
+      );
+
+      const imgData = pageCanvas.toDataURL("image/jpeg", 0.93);
+      doc.addImage(imgData, "JPEG", 0, 0, PAGE_W_MM, PAGE_H_MM);
+
+      if (opts.showPageNumbers) {
+        doc.setFontSize(8);
+        doc.setTextColor(160, 160, 160);
+        doc.text(`${p + 1} / ${totalPages}`, PAGE_W_MM - 14, PAGE_H_MM - 5, { align: "right" });
+      }
+    }
+
+    doc.save(filename);
+  } finally {
+    document.body.removeChild(container);
+  }
+}
+
+export async function exportQuizAsPDF(
+  quiz: QuizData,
+  opts: PdfOptions = defaultPdfOptions
+): Promise<void> {
+  const name = safeName(quiz.title);
+
   if (opts.separateSheets) {
-    const docQ = buildDoc(quiz, opts, "questions", "Question Sheet");
-    docQ.save(`${safeName(quiz.title)}_questions.pdf`);
-    const docA = buildDoc(quiz, opts, "full", "Answer Key");
-    docA.save(`${safeName(quiz.title)}_answer_key.pdf`);
+    const htmlQ = buildHTML(quiz, opts, "questions", "Question Sheet");
+    await renderToPDF(htmlQ, opts, `${name}_questions.pdf`);
+    const htmlA = buildHTML(quiz, opts, "full", "Answer Key");
+    await renderToPDF(htmlA, opts, `${name}_answer_key.pdf`);
   } else {
-    const doc = buildDoc(quiz, opts, opts.contentMode);
-    doc.save(`${safeName(quiz.title)}.pdf`);
+    const html = buildHTML(quiz, opts, opts.contentMode);
+    await renderToPDF(html, opts, `${name}.pdf`);
   }
 }
