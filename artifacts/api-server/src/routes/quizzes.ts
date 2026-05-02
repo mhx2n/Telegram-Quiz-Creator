@@ -114,9 +114,9 @@ ${existingCtx}`,
   const callMessages: AIMessage[] = [systemMsg, ...messages];
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o",
+    model: "gpt-4o-mini",
     max_completion_tokens: 16000,
-    temperature: 0.4,
+    temperature: 0.5,
     messages: callMessages,
   });
 

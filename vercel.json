@@ -5,8 +5,12 @@
   "installCommand": "pnpm install",
   "framework": null,
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://YOUR_BACKEND.replit.app/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
+  "env": {
+    "BASE_PATH": "/"
+  },
   "headers": [
     {
       "source": "/(.*)",
