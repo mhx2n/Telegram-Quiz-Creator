@@ -12,7 +12,7 @@ import {
   ExportQuizParams,
   ExportQuizQueryParams,
 } from "@workspace/api-zod";
-import { openai } from "@workspace/integrations-openai-ai-server";
+import { aiClient as openai, AI_MODEL, AI_SUPPORTS_VISION, type AIMessage } from "../lib/ai";
 
 const router = Router();
 
@@ -22,8 +22,6 @@ type QuizQuestion = {
   correctOptionIndex: number;
   explanation?: string;
 };
-
-type AIMessage = Parameters<typeof openai.chat.completions.create>[0]["messages"][number];
 
 const CATEGORY_PROMPTS: Record<string, string> = {
   engineering: `
@@ -114,7 +112,7 @@ ${existingCtx}`,
   const callMessages: AIMessage[] = [systemMsg, ...messages];
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: AI_MODEL,
     max_completion_tokens: 16000,
     temperature: 0.5,
     messages: callMessages,
@@ -132,7 +130,7 @@ ${existingCtx}`,
   // Extract the JSON array portion
   const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    req.log?.warn({ raw }, "AI returned no JSON array");
+    // no valid JSON array found in AI response
     return [];
   }
   let jsonStr = jsonMatch[0];
@@ -200,7 +198,8 @@ router.post("/quizzes", async (req, res) => {
       ? `Generate quiz questions from this content:\n\n${content}`
       : `Generate quiz questions from the image.`;
 
-    const baseUserContent: AIMessage["content"] = imageBase64
+    // Groq models don't support vision — fall back to text only
+    const baseUserContent: AIMessage["content"] = (imageBase64 && AI_SUPPORTS_VISION)
       ? [
           { type: "text" as const, text: userText },
           { type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
