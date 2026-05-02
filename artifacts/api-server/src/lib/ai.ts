@@ -9,7 +9,29 @@ import OpenAI from "openai";
  */
 
 function buildClient(): { client: OpenAI; model: string; supportsVision: boolean } {
-  // ── Replit proxy ──────────────────────────────────────────────────────────
+  // ── Groq (free, highest priority) ─────────────────────────────────────────
+  // Always prefer Groq when GROQ_API_KEY is set — works on Render, Vercel, anywhere.
+  if (process.env.GROQ_API_KEY) {
+    return {
+      client: new OpenAI({
+        apiKey: process.env.GROQ_API_KEY,
+        baseURL: "https://api.groq.com/openai/v1",
+      }),
+      model: "llama-3.3-70b-versatile",
+      supportsVision: false, // Groq text-only
+    };
+  }
+
+  // ── OpenAI (paid) ─────────────────────────────────────────────────────────
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+      model: "gpt-4o-mini",
+      supportsVision: true,
+    };
+  }
+
+  // ── Replit AI proxy (Replit-hosted only, limited quota) ───────────────────
   if (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL && process.env.AI_INTEGRATIONS_OPENAI_API_KEY) {
     return {
       client: new OpenAI({
@@ -21,32 +43,9 @@ function buildClient(): { client: OpenAI; model: string; supportsVision: boolean
     };
   }
 
-  // ── Groq (free) ───────────────────────────────────────────────────────────
-  if (process.env.GROQ_API_KEY) {
-    return {
-      client: new OpenAI({
-        apiKey: process.env.GROQ_API_KEY,
-        baseURL: "https://api.groq.com/openai/v1",
-      }),
-      model: "llama-3.3-70b-versatile",
-      supportsVision: false, // Groq text models only
-    };
-  }
-
-  // ── OpenAI (paid fallback) ────────────────────────────────────────────────
-  if (process.env.OPENAI_API_KEY) {
-    return {
-      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-      model: "gpt-4o-mini",
-      supportsVision: true,
-    };
-  }
-
   throw new Error(
-    "No AI provider found. Set one of:\n" +
-    "  GROQ_API_KEY      — free tier at https://console.groq.com\n" +
-    "  OPENAI_API_KEY    — paid, at https://platform.openai.com\n" +
-    "  Or enable the Replit OpenAI integration.",
+    "No AI provider configured. Set GROQ_API_KEY (free at https://console.groq.com) " +
+    "in your Render environment variables.",
   );
 }
 
