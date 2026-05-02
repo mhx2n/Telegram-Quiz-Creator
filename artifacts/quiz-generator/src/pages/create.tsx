@@ -36,36 +36,66 @@ export default function CreateQuiz() {
 
   const generateQuiz = useGenerateQuiz();
 
-  const handleImageUpload = useCallback((file: File) => {
+  const compressImage = useCallback((file: File): Promise<{ dataUrl: string; base64: string }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        const MAX_W = 1280;
+        const MAX_H = 1280;
+        let { width, height } = img;
+        if (width > MAX_W || height > MAX_H) {
+          const ratio = Math.min(MAX_W / width, MAX_H / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { reject(new Error("Canvas not supported")); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+        const base64 = dataUrl.split(",")[1];
+        resolve({ dataUrl, base64 });
+      };
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("Image load failed")); };
+      img.src = objectUrl;
+    });
+  }, []);
+
+  const handleImageUpload = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) {
       toast({ title: "Invalid file type", description: "Please upload an image file.", variant: "destructive" });
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      toast({ title: "File too large", description: "Maximum file size is 10MB.", variant: "destructive" });
+    if (file.size > 20 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum file size is 20MB.", variant: "destructive" });
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
+    try {
+      const { dataUrl, base64 } = await compressImage(file);
       setImagePreview(dataUrl);
-      const base64 = dataUrl.split(",")[1];
       setImageBase64(base64);
       setOcrState("idle");
       setOcrProgress(0);
-    };
-    reader.readAsDataURL(file);
-  }, [toast]);
+      const sizeMB = (base64.length * 0.75 / 1024 / 1024).toFixed(1);
+      toast({ title: `Image ready (${sizeMB} MB)`, description: "Click 'Extract Text' for OCR, or generate directly." });
+    } catch {
+      toast({ title: "Image processing failed", description: "Could not load the image. Try a different file.", variant: "destructive" });
+    }
+  }, [toast, compressImage]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) handleImageUpload(file);
+    if (file) void handleImageUpload(file);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (file) handleImageUpload(file);
+    if (file) void handleImageUpload(file);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -125,8 +155,10 @@ export default function CreateQuiz() {
           toast({ title: "Quiz generated!", description: `${quiz.questionCount} questions created successfully.` });
           setLocation(`/quiz/${quiz.id}`);
         },
-        onError: () => {
-          toast({ title: "Generation failed", description: "Could not generate quiz. Please try again.", variant: "destructive" });
+        onError: (err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Could not generate quiz. Please try again.";
+          const cleanMsg = msg.replace(/^HTTP \d+ [^:]+: /, "");
+          toast({ title: "Generation failed", description: cleanMsg, variant: "destructive" });
         },
       }
     );

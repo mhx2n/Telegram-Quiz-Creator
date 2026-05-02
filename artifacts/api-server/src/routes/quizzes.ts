@@ -33,66 +33,107 @@ router.get("/quizzes/stats", async (req, res) => {
 router.post("/quizzes", async (req, res) => {
   const parsed = GenerateQuizBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+    res.status(400).json({ error: "Invalid request: " + parsed.error.message });
     return;
   }
   const { content, title, imageBase64, questionCount = 5, language = "Bengali" } = parsed.data;
 
-  const messages: Array<{ role: "user" | "system"; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [
-    {
-      role: "system",
-      content: `You are a quiz generator. Generate exactly ${questionCount} multiple choice questions from the provided content. Respond ONLY with valid JSON. The language of the quiz questions and answers should be in ${language}. Return a JSON array like:
+  try {
+    const messages: Array<{ role: "user" | "system"; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [
+      {
+        role: "system",
+        content: `You are a quiz generator. Generate exactly ${questionCount} multiple choice questions from the provided content. Respond ONLY with valid JSON. The language of the quiz questions and answers should be in ${language}. Return a JSON array like:
 [{"question":"...","options":["A","B","C","D"],"correctOptionIndex":0,"explanation":"..."}]
 Rules:
 - Each question must have exactly 4 options
-- correctOptionIndex is 0-based
-- explanation is optional but helpful
+- correctOptionIndex is 0-based (0=A, 1=B, 2=C, 3=D)
+- explanation field is required and should be in ${language}
 - Questions should test understanding, not just facts
-- Do not include any text outside the JSON array`,
-    },
-  ];
+- Do not include any text outside the JSON array
+- Do not wrap in markdown code blocks`,
+      },
+    ];
 
-  if (imageBase64) {
-    messages.push({
-      role: "user",
-      content: [
-        { type: "text", text: `Content: ${content}` },
-        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
-      ],
+    const userText = content?.trim()
+      ? `Generate ${questionCount} quiz questions from this content:\n\n${content}`
+      : `Generate ${questionCount} quiz questions from the image.`;
+
+    if (imageBase64) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+        ],
+      });
+    } else {
+      messages.push({ role: "user", content: userText });
+    }
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      max_completion_tokens: 16000,
+      messages: messages as Parameters<typeof openai.chat.completions.create>[0]["messages"],
     });
-  } else {
-    messages.push({ role: "user", content: `Content: ${content}` });
+
+    const raw = response.choices[0]?.message?.content ?? "[]";
+    let questions: Array<{ question: string; options: string[]; correctOptionIndex: number; explanation?: string }> = [];
+
+    const cleaned = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+    const jsonStr = jsonMatch ? jsonMatch[0] : cleaned;
+
+    try {
+      questions = JSON.parse(jsonStr);
+    } catch {
+      req.log.error({ raw: raw.slice(0, 500) }, "Failed to parse AI JSON response");
+      res.status(500).json({ error: "AI returned an invalid response. Please try again." });
+      return;
+    }
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+      res.status(500).json({ error: "AI returned no questions. Try with more detailed content." });
+      return;
+    }
+
+    const validQuestions = questions.filter(
+      (q) => q.question && Array.isArray(q.options) && q.options.length >= 2 && typeof q.correctOptionIndex === "number"
+    );
+
+    if (validQuestions.length === 0) {
+      res.status(500).json({ error: "AI returned malformed questions. Please try again." });
+      return;
+    }
+
+    const quizTitle = title || `Quiz - ${new Date().toLocaleDateString("bn-BD")}`;
+    const [quiz] = await db
+      .insert(quizzesTable)
+      .values({
+        title: quizTitle,
+        sourceContent: content,
+        questions: validQuestions,
+        questionCount: validQuestions.length,
+        postedToTelegram: false,
+      })
+      .returning();
+
+    res.status(201).json(formatQuiz(quiz));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    req.log.error({ err }, "Quiz generation failed");
+    if (message.includes("timeout") || message.includes("ETIMEDOUT")) {
+      res.status(504).json({ error: "Request timed out. Try fewer questions or smaller image." });
+    } else if (message.includes("insufficient_quota") || message.includes("billing")) {
+      res.status(402).json({ error: "AI service quota exceeded. Please try again later." });
+    } else {
+      res.status(500).json({ error: "Quiz generation failed: " + message });
+    }
   }
-
-  const response = await openai.chat.completions.create({
-    model: "gpt-5.4",
-    max_completion_tokens: 8192,
-    messages: messages as Parameters<typeof openai.chat.completions.create>[0]["messages"],
-  });
-
-  const raw = response.choices[0]?.message?.content ?? "[]";
-  let questions: Array<{ question: string; options: string[]; correctOptionIndex: number; explanation?: string }> = [];
-  try {
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    questions = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-  } catch {
-    res.status(500).json({ error: "Failed to parse AI response" });
-    return;
-  }
-
-  const quizTitle = title || `Quiz - ${new Date().toLocaleDateString("bn-BD")}`;
-  const [quiz] = await db
-    .insert(quizzesTable)
-    .values({
-      title: quizTitle,
-      sourceContent: content,
-      questions,
-      questionCount: questions.length,
-      postedToTelegram: false,
-    })
-    .returning();
-
-  res.status(201).json(formatQuiz(quiz));
 });
 
 router.get("/quizzes/:id", async (req, res) => {
