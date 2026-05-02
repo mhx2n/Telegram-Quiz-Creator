@@ -8,7 +8,7 @@
 
 export interface GenerateQuizBody {
   title?: string;
-  content: string;
+  content?: string;
   imageBase64?: string | null;
   /**
    * @minimum 1

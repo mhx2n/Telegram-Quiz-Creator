@@ -36,7 +36,12 @@ router.post("/quizzes", async (req, res) => {
     res.status(400).json({ error: "Invalid request: " + parsed.error.message });
     return;
   }
-  const { content, title, imageBase64, questionCount = 5, language = "Bengali" } = parsed.data;
+  const { content = "", title, imageBase64, questionCount = 5, language = "Bengali" } = parsed.data;
+
+  if (!content.trim() && !imageBase64) {
+    res.status(400).json({ error: "Please provide text content or an image." });
+    return;
+  }
 
   try {
     const messages: Array<{ role: "user" | "system"; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [

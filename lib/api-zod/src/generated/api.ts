@@ -54,7 +54,7 @@ export const generateQuizBodyLanguageDefault = `Bengali`;
 
 export const GenerateQuizBody = zod.object({
   title: zod.string().optional(),
-  content: zod.string(),
+  content: zod.string().optional().default(""),
   imageBase64: zod.string().nullish(),
   questionCount: zod
     .number()

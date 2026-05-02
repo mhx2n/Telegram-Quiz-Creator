@@ -134,14 +134,14 @@ export default function CreateQuiz() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!content.trim()) {
-      toast({ title: "Content required", description: "Please enter content or run OCR on an image.", variant: "destructive" });
+    if (!content.trim() && !imageBase64) {
+      toast({ title: "Content required", description: "Please paste text, upload an image, or run OCR first.", variant: "destructive" });
       return;
     }
     generateQuiz.mutate(
       {
         data: {
-          content: content.trim(),
+          content: content.trim() || "",
           title: title.trim() || undefined,
           imageBase64: imageBase64 || undefined,
           questionCount,

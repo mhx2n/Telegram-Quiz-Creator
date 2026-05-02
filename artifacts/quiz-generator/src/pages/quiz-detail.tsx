@@ -49,14 +49,14 @@ const TG_STORAGE_KEY = "tg_settings";
 function loadTgSettings() {
   try {
     const raw = localStorage.getItem(TG_STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as { botToken: string; channelId: string };
+    if (raw) return JSON.parse(raw) as { botToken: string; channelId: string; questionPrefix: string; explanationSuffix: string };
   } catch {}
-  return { botToken: "", channelId: "" };
+  return { botToken: "", channelId: "", questionPrefix: "", explanationSuffix: "" };
 }
 
-function saveTgSettings(botToken: string, channelId: string) {
+function saveTgSettings(botToken: string, channelId: string, questionPrefix: string, explanationSuffix: string) {
   try {
-    localStorage.setItem(TG_STORAGE_KEY, JSON.stringify({ botToken, channelId }));
+    localStorage.setItem(TG_STORAGE_KEY, JSON.stringify({ botToken, channelId, questionPrefix, explanationSuffix }));
   } catch {}
 }
 
@@ -71,6 +71,8 @@ export default function QuizDetail() {
   const [showTelegramDialog, setShowTelegramDialog] = useState(false);
   const [botToken, setBotToken] = useState(savedTg.botToken);
   const [channelId, setChannelId] = useState(savedTg.channelId);
+  const [questionPrefix, setQuestionPrefix] = useState(savedTg.questionPrefix ?? "");
+  const [explanationSuffix, setExplanationSuffix] = useState(savedTg.explanationSuffix ?? "");
   const [botValid, setBotValid] = useState<null | { valid: boolean; username?: string | null }>(null);
   const [postDelay, setPostDelay] = useState(2);
   const [postProgress, setPostProgress] = useState(0);
@@ -94,8 +96,8 @@ export default function QuizDetail() {
   const validateBot = useValidateTelegramBot();
 
   useEffect(() => {
-    if (botToken || channelId) saveTgSettings(botToken, channelId);
-  }, [botToken, channelId]);
+    saveTgSettings(botToken, channelId, questionPrefix, explanationSuffix);
+  }, [botToken, channelId, questionPrefix, explanationSuffix]);
 
   const handleExportPDF = () => {
     if (!quiz) return;
@@ -166,7 +168,7 @@ export default function QuizDetail() {
     const questions = quiz?.questions as QuizQuestion[];
     if (!questions?.length) return;
 
-    saveTgSettings(botToken, channelId);
+    saveTgSettings(botToken, channelId, questionPrefix, explanationSuffix);
     setPostProgress(0);
     setPostingStatus("Starting...");
 
@@ -175,13 +177,18 @@ export default function QuizDetail() {
       for (let i = 0; i < questions.length; i++) {
         setPostingStatus(`Posting question ${i + 1} of ${questions.length}...`);
 
+        const rawQuestion = `${questionPrefix}${questions[i].question}`;
+        const rawExplanation = questions[i].explanation
+          ? `${questions[i].explanation}${explanationSuffix}`
+          : undefined;
+
         const payload = {
           chat_id: channelId,
-          question: questions[i].question,
-          options: questions[i].options,
+          question: rawQuestion.slice(0, 300),
+          options: questions[i].options.map((o) => o.slice(0, 100)),
           type: "quiz",
           correct_option_id: questions[i].correctOptionIndex,
-          explanation: questions[i].explanation || undefined,
+          explanation: rawExplanation?.slice(0, 200),
           is_anonymous: true,
         };
 
@@ -584,6 +591,47 @@ export default function QuizDetail() {
                   <span className="text-sm text-muted-foreground">Recommended: 1-3s to avoid rate limits</span>
                 </div>
               </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded text-xs font-mono">A</span>
+                  Question Prefix
+                  <span className="text-muted-foreground font-normal">(question-এর আগে যোগ হবে)</span>
+                </Label>
+                <Input
+                  placeholder='যেমন: ★  বা  "Q."  বা  "প্র."'
+                  value={questionPrefix}
+                  onChange={(e) => setQuestionPrefix(e.target.value)}
+                  className="text-sm"
+                  maxLength={20}
+                />
+                {questionPrefix && (
+                  <p className="text-xs text-muted-foreground bg-muted/40 rounded px-2 py-1 font-mono truncate">
+                    Preview: <span className="text-foreground">{questionPrefix}</span>প্রশ্নের টেক্সট...
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded text-xs font-mono">Z</span>
+                  Explanation Suffix
+                  <span className="text-muted-foreground font-normal">(explanation-এর পরে যোগ হবে)</span>
+                </Label>
+                <Input
+                  placeholder='যেমন: " — HSC 2024"  বা  " [তথ্যসূত্র: বই]"'
+                  value={explanationSuffix}
+                  onChange={(e) => setExplanationSuffix(e.target.value)}
+                  className="text-sm"
+                  maxLength={50}
+                />
+                {explanationSuffix && (
+                  <p className="text-xs text-muted-foreground bg-muted/40 rounded px-2 py-1 font-mono truncate">
+                    Preview: ব্যাখ্যার টেক্সট...<span className="text-foreground">{explanationSuffix}</span>
+                  </p>
+                )}
+              </div>
+
               <div className="bg-muted/50 rounded-lg p-3 text-sm space-y-1">
                 <div className="font-medium">Will post:</div>
                 <div className="text-muted-foreground">{questions.length} questions as anonymous Telegram quiz polls</div>

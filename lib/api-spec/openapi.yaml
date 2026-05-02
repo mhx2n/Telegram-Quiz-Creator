@@ -273,6 +273,7 @@ components:
           type: string
         content:
           type: string
+          default: ""
         imageBase64:
           type: string
           nullable: true
@@ -284,8 +285,6 @@ components:
         language:
           type: string
           default: "Bengali"
-      required:
-        - content
 
     UpdateQuizBody:
       type: object
