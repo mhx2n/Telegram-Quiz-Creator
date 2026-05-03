@@ -23,6 +23,55 @@ type QuizQuestion = {
   explanation?: string;
 };
 
+function normalizeQuestion(q: QuizQuestion): QuizQuestion | null {
+  const question = q.question?.trim();
+  const options = Array.isArray(q.options)
+    ? q.options.map((opt) => String(opt ?? "").trim())
+    : [];
+
+  if (!question) return null;
+  if (options.length !== 4) return null;
+  if (options.some((opt) => !opt)) return null;
+  if (typeof q.correctOptionIndex !== "number") return null;
+  if (q.correctOptionIndex < 0 || q.correctOptionIndex > 3) return null;
+
+  return {
+    question,
+    options,
+    correctOptionIndex: q.correctOptionIndex,
+    explanation: q.explanation?.trim() || undefined,
+  };
+}
+
+function shuffleQuestionOptions(q: QuizQuestion): QuizQuestion {
+  const items = q.options.map((option, originalIndex) => ({
+    option,
+    originalIndex,
+  }));
+
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+
+  const correctIndex = items.findIndex(
+    (item) => item.originalIndex === q.correctOptionIndex
+  );
+
+  return {
+    ...q,
+    options: items.map((item) => item.option),
+    correctOptionIndex: correctIndex >= 0 ? correctIndex : q.correctOptionIndex,
+  };
+}
+
+function finalizeQuestions(questions: QuizQuestion[]): QuizQuestion[] {
+  return questions
+    .map(normalizeQuestion)
+    .filter((q): q is QuizQuestion => Boolean(q))
+    .map(shuffleQuestionOptions);
+}
+
 const CATEGORY_PROMPTS: Record<string, string> = {
   engineering: `
 CATEGORY: Engineering Admission (BUET, CUET, RUET, KUET, DUET standard)
@@ -102,7 +151,9 @@ STRICT RULES:
 6. Questions must test UNDERSTANDING, not just memory
 7. For numerical problems: show the correct calculated value in explanation
 8. NEVER make the correct option obviously different in length/style from wrong options
-9. Output ONLY a valid JSON array — no markdown, no extra text, no comments
+9. Randomize the order of options for every question so the correct answer does not stay in the same position repeatedly
+10. Keep the correct answer factually accurate after randomization
+11. Output ONLY a valid JSON array — no markdown, no extra text, no comments
 
 Return format:
 [{"question":"...","options":["A text","B text","C text","D text"],"correctOptionIndex":0,"explanation":"..."}]
@@ -120,48 +171,45 @@ ${existingCtx}`,
 
   const raw = response.choices[0]?.message?.content ?? "[]";
 
-  // Robust cleanup: strip markdown code fences, trim whitespace
   let cleaned = raw
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
 
-  // Extract the JSON array portion
   const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    // no valid JSON array found in AI response
     return [];
   }
   let jsonStr = jsonMatch[0];
 
-  // Fix common AI JSON escaping issues:
-  // 1. Remove invalid control chars
   jsonStr = jsonStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
-  // 2. Fix lone backslashes that aren't valid escapes
   jsonStr = jsonStr.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
-  // 3. Remove trailing commas before ] or }
   jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
 
   let parsed: QuizQuestion[];
   try {
     parsed = JSON.parse(jsonStr) as QuizQuestion[];
   } catch {
-    // Last resort: try to extract valid objects one by one
     const objMatches = jsonStr.match(/\{[^{}]*"question"[^{}]*\}/g) ?? [];
     parsed = [];
     for (const objStr of objMatches) {
-      try { parsed.push(JSON.parse(objStr) as QuizQuestion); } catch {}
+      try {
+        parsed.push(JSON.parse(objStr) as QuizQuestion);
+      } catch {}
     }
   }
-  return parsed.filter(
-    (q) =>
-      q.question &&
-      Array.isArray(q.options) &&
-      q.options.length === 4 &&
-      typeof q.correctOptionIndex === "number" &&
-      q.correctOptionIndex >= 0 &&
-      q.correctOptionIndex <= 3
+
+  return finalizeQuestions(
+    parsed.filter(
+      (q) =>
+        q.question &&
+        Array.isArray(q.options) &&
+        q.options.length === 4 &&
+        typeof q.correctOptionIndex === "number" &&
+        q.correctOptionIndex >= 0 &&
+        q.correctOptionIndex <= 3
+    )
   );
 }
 
@@ -185,6 +233,7 @@ router.post("/quizzes", async (req, res) => {
     res.status(400).json({ error: "Invalid request: " + parsed.error.message });
     return;
   }
+
   const { content = "", title, imageBase64, questionCount = 5, language = "Bengali" } = parsed.data;
   const category = (req.body as Record<string, string>).category ?? "general";
 
@@ -198,8 +247,7 @@ router.post("/quizzes", async (req, res) => {
       ? `Generate quiz questions from this content:\n\n${content}`
       : `Generate quiz questions from the image.`;
 
-    // Groq models don't support vision — fall back to text only
-    const baseUserContent: AIMessage["content"] = (imageBase64 && AI_SUPPORTS_VISION)
+    const baseUserContent: AIMessage["content"] = imageBase64 && AI_SUPPORTS_VISION
       ? [
           { type: "text" as const, text: userText },
           { type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
@@ -237,6 +285,8 @@ router.post("/quizzes", async (req, res) => {
       }
     }
 
+    allQuestions = finalizeQuestions(allQuestions);
+
     if (!allQuestions || allQuestions.length === 0) {
       res.status(500).json({ error: "AI returned no questions. Try with more detailed content." });
       return;
@@ -258,23 +308,29 @@ router.post("/quizzes", async (req, res) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     req.log.error({ err }, "Quiz generation failed");
+
     if (message.includes("timeout") || message.includes("ETIMEDOUT")) {
       res.status(504).json({ error: "Request timed out. Try fewer questions or smaller image." });
       return;
-    } 
-    
-    if (message.includes("All AI providers exhausted") || message.includes("rate-limited")) {
-      res.status(503).json({ 
-        error: "All AI keys are exhausted or rate-limited right now. Please try again later.", });
-      return;
-    } 
-      res.status(500).json({ error: "Quiz generation failed: " + message });
     }
+
+    if (message.includes("All AI providers exhausted") || message.includes("rate-limited")) {
+      res.status(503).json({
+        error: "All AI keys are exhausted or rate-limited right now. Please try again later.",
+      });
+      return;
+    }
+
+    res.status(500).json({ error: "Quiz generation failed: " + message });
+  }
 });
 
 router.post("/quizzes/:id/add-questions", async (req, res) => {
   const idNum = parseInt(req.params.id ?? "0", 10);
-  if (!idNum) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!idNum) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
 
   const { additionalCount = 5, language = "Bengali", category = "general" } = req.body as {
     additionalCount?: number;
@@ -285,7 +341,10 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
   const count = Math.max(1, Math.min(50, Number(additionalCount) || 5));
 
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, idNum));
-  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+  if (!quiz) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
 
   try {
     const existingQuestions = (quiz.questions ?? []) as QuizQuestion[];
@@ -322,12 +381,15 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
       }
     }
 
+    newQuestions = finalizeQuestions(newQuestions);
+
     if (newQuestions.length === 0) {
       res.status(500).json({ error: "Failed to generate additional questions." });
       return;
     }
 
-    const merged = [...existingQuestions, ...newQuestions];
+    const merged = finalizeQuestions([...existingQuestions, ...newQuestions]);
+
     const [updated] = await db
       .update(quizzesTable)
       .set({ questions: merged, questionCount: merged.length, updatedAt: new Date() })
@@ -344,38 +406,65 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
 
 router.get("/quizzes/:id", async (req, res) => {
   const parsed = GetQuizParams.safeParse({ id: req.params.id });
-  if (!parsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, parsed.data.id));
-  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+  if (!quiz) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   res.json(formatQuiz(quiz));
 });
 
 router.put("/quizzes/:id", async (req, res) => {
   const paramsParsed = UpdateQuizParams.safeParse({ id: req.params.id });
-  if (!paramsParsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
-  const bodyParsed = UpdateQuizBody.safeParse(req.body);
-  if (!bodyParsed.success) { res.status(400).json({ error: bodyParsed.error.message }); return; }
-  const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (bodyParsed.data.title) updates.title = bodyParsed.data.title;
-  if (bodyParsed.data.questions) {
-    updates.questions = bodyParsed.data.questions;
-    updates.questionCount = bodyParsed.data.questions.length;
+  if (!paramsParsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
   }
+
+  const bodyParsed = UpdateQuizBody.safeParse(req.body);
+  if (!bodyParsed.success) {
+    res.status(400).json({ error: bodyParsed.error.message });
+    return;
+  }
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+  if (bodyParsed.data.title) updates.title = bodyParsed.data.title;
+
+  if (bodyParsed.data.questions) {
+    const normalizedQuestions = finalizeQuestions(bodyParsed.data.questions as QuizQuestion[]);
+    updates.questions = normalizedQuestions;
+    updates.questionCount = normalizedQuestions.length;
+  }
+
   const [quiz] = await db.update(quizzesTable).set(updates).where(eq(quizzesTable.id, paramsParsed.data.id)).returning();
-  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+  if (!quiz) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   res.json(formatQuiz(quiz));
 });
 
 router.delete("/quizzes/:id", async (req, res) => {
   const parsed = DeleteQuizParams.safeParse({ id: req.params.id });
-  if (!parsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
   await db.delete(quizzesTable).where(eq(quizzesTable.id, parsed.data.id));
   res.status(204).send();
 });
 
 router.post("/quizzes/:id/mark-posted", async (req, res) => {
   const parsed = GetQuizParams.safeParse({ id: req.params.id });
-  if (!parsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
   const { channelId } = req.body as { channelId?: string };
   await db.update(quizzesTable)
     .set({ postedToTelegram: true, telegramChannel: channelId ?? null, updatedAt: new Date() })
@@ -385,12 +474,22 @@ router.post("/quizzes/:id/mark-posted", async (req, res) => {
 
 router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
   const paramsParsed = PostQuizToTelegramParams.safeParse({ id: req.params.id });
-  if (!paramsParsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!paramsParsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
   const bodyParsed = PostQuizToTelegramBody.safeParse(req.body);
-  if (!bodyParsed.success) { res.status(400).json({ error: bodyParsed.error.message }); return; }
+  if (!bodyParsed.success) {
+    res.status(400).json({ error: bodyParsed.error.message });
+    return;
+  }
 
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, paramsParsed.data.id));
-  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+  if (!quiz) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
 
   const { botToken, channelId, questionIndex } = bodyParsed.data;
   const questions = quiz.questions as QuizQuestion[];
@@ -407,12 +506,14 @@ router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
       explanation: q.explanation || undefined,
       is_anonymous: true,
     };
+
     const resp = await fetch(`https://api.telegram.org/bot${botToken}/sendPoll`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await resp.json() as { ok: boolean; result?: { message_id: number } };
+
+    const data = (await resp.json()) as { ok: boolean; result?: { message_id: number } };
     if (!data.ok) {
       res.status(400).json({ error: `Telegram error: ${JSON.stringify(data)}` });
       return;
@@ -420,18 +521,31 @@ router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
     if (data.result) messageIds.push(data.result.message_id);
   }
 
-  await db.update(quizzesTable).set({ postedToTelegram: true, telegramChannel: channelId, updatedAt: new Date() }).where(eq(quizzesTable.id, paramsParsed.data.id));
+  await db.update(quizzesTable)
+    .set({ postedToTelegram: true, telegramChannel: channelId, updatedAt: new Date() })
+    .where(eq(quizzesTable.id, paramsParsed.data.id));
+
   res.json({ success: true, postedCount: messageIds.length, messageIds });
 });
 
 router.get("/quizzes/:id/export", async (req, res) => {
   const paramsParsed = ExportQuizParams.safeParse({ id: req.params.id });
-  if (!paramsParsed.success) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!paramsParsed.success) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
   const queryParsed = ExportQuizQueryParams.safeParse(req.query);
-  if (!queryParsed.success) { res.status(400).json({ error: queryParsed.error.message }); return; }
+  if (!queryParsed.success) {
+    res.status(400).json({ error: queryParsed.error.message });
+    return;
+  }
 
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, paramsParsed.data.id));
-  if (!quiz) { res.status(404).json({ error: "Not found" }); return; }
+  if (!quiz) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
 
   const questions = quiz.questions as QuizQuestion[];
   const format = queryParsed.data.format;
