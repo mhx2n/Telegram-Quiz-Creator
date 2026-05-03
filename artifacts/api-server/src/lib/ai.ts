@@ -4,10 +4,11 @@ type ChatCreate = OpenAI["chat"]["completions"]["create"];
 type ChatCreateParams = Parameters<ChatCreate>[0];
 type ChatCreateResult = Awaited<ReturnType<ChatCreate>>;
 
-type ProviderName = "groq" | "gemini" | "openai" | "replit";
+type ProviderName = "gemini" | "groq" | "openai" | "replit";
 
 type ProviderConfig = {
   name: ProviderName;
+  label: string;
   client: OpenAI;
   model: string;
   supportsVision: boolean;
@@ -17,23 +18,29 @@ const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 
 function splitKeys(value?: string | null): string[] {
-  return [...new Set((value ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean))];
+  return [...new Set(
+    (value ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )];
+}
+
+function makeProviderLabel(name: ProviderName, index: number) {
+  return `${name}#${index + 1}`;
 }
 
 function buildProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
 
-  const groqKeys = [
-    ...splitKeys(process.env.GROQ_API_KEYS),
-    ...(process.env.GROQ_API_KEY ? [process.env.GROQ_API_KEY.trim()] : []),
-  ].filter(Boolean);
-
   const geminiKeys = [
     ...splitKeys(process.env.GEMINI_API_KEYS),
     ...(process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY.trim()] : []),
+  ].filter(Boolean);
+
+  const groqKeys = [
+    ...splitKeys(process.env.GROQ_API_KEYS),
+    ...(process.env.GROQ_API_KEY ? [process.env.GROQ_API_KEY.trim()] : []),
   ].filter(Boolean);
 
   const openaiKeys = [
@@ -41,9 +48,25 @@ function buildProviders(): ProviderConfig[] {
     ...(process.env.OPENAI_API_KEY ? [process.env.OPENAI_API_KEY.trim()] : []),
   ].filter(Boolean);
 
-  for (const key of groqKeys) {
+  // Gemini first
+  geminiKeys.forEach((key, index) => {
+    providers.push({
+      name: "gemini",
+      label: makeProviderLabel("gemini", index),
+      client: new OpenAI({
+        apiKey: key,
+        baseURL: GEMINI_BASE_URL,
+      }),
+      model: process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash",
+      supportsVision: true,
+    });
+  });
+
+  // Groq next
+  groqKeys.forEach((key, index) => {
     providers.push({
       name: "groq",
+      label: makeProviderLabel("groq", index),
       client: new OpenAI({
         apiKey: key,
         baseURL: GROQ_BASE_URL,
@@ -51,34 +74,26 @@ function buildProviders(): ProviderConfig[] {
       model: process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile",
       supportsVision: false,
     });
-  }
+  });
 
-  for (const key of geminiKeys) {
-    providers.push({
-      name: "gemini",
-      client: new OpenAI({
-        apiKey: key,
-        baseURL: GEMINI_BASE_URL,
-      }),
-      model: process.env.GEMINI_MODEL?.trim() || "gemini-2.0-flash",
-      supportsVision: true,
-    });
-  }
-
-  for (const key of openaiKeys) {
+  // OpenAI after that
+  openaiKeys.forEach((key, index) => {
     providers.push({
       name: "openai",
+      label: makeProviderLabel("openai", index),
       client: new OpenAI({
         apiKey: key,
       }),
       model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
       supportsVision: true,
     });
-  }
+  });
 
+  // Replit proxy last
   if (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL && process.env.AI_INTEGRATIONS_OPENAI_API_KEY) {
     providers.push({
       name: "replit",
+      label: "replit#1",
       client: new OpenAI({
         apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
         baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
@@ -92,6 +107,11 @@ function buildProviders(): ProviderConfig[] {
 }
 
 const providers = buildProviders();
+
+console.log(
+  "[ai] providers loaded:",
+  providers.map((p) => `${p.label}:${p.model}:${p.supportsVision ? "vision" : "text-only"}`).join(", ") || "none"
+);
 
 function hasVisionInput(messages: ChatCreateParams["messages"]): boolean {
   return messages.some((msg: any) => {
@@ -113,37 +133,53 @@ function isRetryableProviderError(error: unknown): boolean {
     e?.error?.code,
     e?.code,
     e?.status,
+    e?.response?.status,
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
 
-  return /insufficient_quota|quota|rate\s*limit|too many requests|billing|resource exhausted|429/.test(text);
+  return /insufficient_quota|quota|rate\s*limit|too many requests|billing|resource exhausted|429|503|temporarily unavailable/.test(text);
 }
 
 async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreateResult> {
   const needsVision = hasVisionInput(params.messages);
   const candidateProviders = providers.filter((p) => !needsVision || p.supportsVision);
 
+  console.log("[ai] request start", {
+    needsVision,
+    totalProviders: providers.length,
+    candidateProviders: candidateProviders.map((p) => p.label),
+    modelFromCall: (params as any)?.model,
+  });
+
   if (!candidateProviders.length) {
-    throw new Error("No vision-capable AI provider configured. Add a Gemini or OpenAI key.");
+    throw new Error("No vision-capable AI provider configured. Add a Gemini, OpenAI, or Replit key.");
   }
 
   const errors: string[] = [];
 
   for (const provider of candidateProviders) {
     try {
-      return await provider.client.chat.completions.create({
+      console.log("[ai] trying provider:", provider.label, "model:", provider.model);
+
+      const result = await provider.client.chat.completions.create({
         ...params,
         model: provider.model,
       } as ChatCreateParams);
+
+      console.log("[ai] success provider:", provider.label);
+      return result;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log("[ai] failed provider:", provider.label, "message:", message);
+
       if (!isRetryableProviderError(error)) {
+        console.log("[ai] non-retryable error, stopping on:", provider.label);
         throw error;
       }
 
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(`${provider.name}: ${message}`);
+      errors.push(`${provider.label}: ${message}`);
       continue;
     }
   }
