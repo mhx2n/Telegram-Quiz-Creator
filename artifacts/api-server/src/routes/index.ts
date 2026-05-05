@@ -1,12 +1,12 @@
-import { Router, type IRouter } from "express";
+import { Router } from "express";
 import healthRouter from "./health";
 import quizzesRouter from "./quizzes";
 import telegramRouter from "./telegram";
 
-const router: IRouter = Router();
+const router = Router();
 
-router.use(healthRouter);
-router.use(quizzesRouter);
-router.use(telegramRouter);
+router.use(healthRouter);      // → /health
+router.use(quizzesRouter);     // → /quizzes/...
+router.use(telegramRouter);    // → /telegram/...
 
 export default router;
