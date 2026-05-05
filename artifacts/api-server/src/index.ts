@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { pool } from "@workspace/db";
+import { warmupExternalProvider } from "./lib/ai";
 
 const port = Number(process.env["PORT"] ?? "10000");
 if (Number.isNaN(port) || port <= 0) {
@@ -32,6 +33,7 @@ async function ensureSchema() {
 
 ensureSchema()
   .then(() => {
+    warmupExternalProvider();
     app.listen(port, (err) => {
       if (err) { logger.error({ err }, "Error starting server"); process.exit(1); }
       logger.info({ port }, "Server listening");

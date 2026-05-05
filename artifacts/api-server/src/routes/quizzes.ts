@@ -12,7 +12,7 @@ import {
   ExportQuizParams,
   ExportQuizQueryParams,
 } from "@workspace/api-zod";
-import { aiClient as openai, AI_MODEL, AI_SUPPORTS_VISION, type AIMessage } from "../lib/ai";
+import { aiClient as openai, AI_SUPPORTS_VISION, type AIMessage } from "../lib/ai";
 
 const router = Router();
 
@@ -211,8 +211,7 @@ ${existingCtx}`,
   const callMessages: AIMessage[] = [systemMsg, ...messages];
 
   const response = await openai.chat.completions.create({
-    model: AI_MODEL,
-    max_completion_tokens: 16000,
+    max_completion_tokens: 8000,
     temperature: 0.5,
     messages: callMessages,
   });
@@ -294,7 +293,7 @@ router.post("/quizzes", async (req, res) => {
 
     const userMessage: AIMessage = { role: "user", content: baseUserContent };
 
-    const BATCH = 20;
+    const BATCH = 10;
     let allQuestions: QuizQuestion[] = [];
 
     if (questionCount <= BATCH) {
@@ -394,7 +393,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
 
     const userMessage: AIMessage = { role: "user", content: userText };
 
-    const BATCH = 20;
+    const BATCH = 10;
     let newQuestions: QuizQuestion[] = [];
 
     if (count <= BATCH) {
