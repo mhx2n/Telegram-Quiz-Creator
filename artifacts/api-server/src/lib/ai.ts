@@ -56,10 +56,14 @@ async function callProvider(providerUrl: string, prompt: string): Promise<string
   }
 
   let data: any;
+
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("Invalid JSON response");
+    console.log("[ai] raw response (not JSON):", raw.slice(0, 200));
+
+    // ✅ fallback (VERY IMPORTANT)
+    return raw.trim();
   }
 
   const answer =
@@ -70,7 +74,7 @@ async function callProvider(providerUrl: string, prompt: string): Promise<string
     "";
 
   if (!answer || typeof answer !== "string") {
-    throw new Error("Empty response");
+    return raw.trim(); // fallback
   }
 
   return answer.trim();
