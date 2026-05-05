@@ -1,190 +1,116 @@
-import OpenAI from "openai";
-
-type ChatCreate = OpenAI["chat"]["completions"]["create"];
-type ChatCreateParams = Parameters<ChatCreate>[0];
-type ChatCreateResult = Awaited<ReturnType<ChatCreate>>;
-
-type ProviderName = "gemini" | "groq" | "openai" | "replit";
-
-type ProviderConfig = {
-  name: ProviderName;
-  label: string;
-  client: OpenAI;
-  model: string;
-  supportsVision: boolean;
+type ChatCreateParams = {
+  messages: Array<{
+    role: "system" | "user" | "assistant";
+    content: string | Array<{ type: string; [key: string]: unknown }>;
+  }>;
+  model?: string;
+  max_completion_tokens?: number;
+  temperature?: number;
 };
 
-const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
-const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+type ChatCreateResult = {
+  choices: Array<{
+    message: {
+      content: string | null;
+    };
+  }>;
+};
 
-function splitKeys(value?: string | null): string[] {
-  return [...new Set(
-    (value ?? "")
-      .split(",")
-      .map((s) => s.trim())
+type AIMessage = ChatCreateParams["messages"][number];
+
+const LOCAL_AI_API_URL = process.env.LOCAL_AI_API_URL?.trim() || "http://127.0.0.1:5000/api/ask";
+
+function contentToText(content: AIMessage["content"]): string {
+  if (typeof content === "string") return content;
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (part.type === "text" && typeof part.text === "string") return part.text;
+        if (part.type === "image_url") return "[IMAGE ATTACHED]";
+        return "";
+      })
       .filter(Boolean)
-  )];
-}
-
-function makeProviderLabel(name: ProviderName, index: number) {
-  return `${name}#${index + 1}`;
-}
-
-function buildProviders(): ProviderConfig[] {
-  const providers: ProviderConfig[] = [];
-
-  const geminiKeys = [
-    ...splitKeys(process.env.GEMINI_API_KEYS),
-    ...(process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY.trim()] : []),
-  ].filter(Boolean);
-
-  const groqKeys = [
-    ...splitKeys(process.env.GROQ_API_KEYS),
-    ...(process.env.GROQ_API_KEY ? [process.env.GROQ_API_KEY.trim()] : []),
-  ].filter(Boolean);
-
-  const openaiKeys = [
-    ...splitKeys(process.env.OPENAI_API_KEYS),
-    ...(process.env.OPENAI_API_KEY ? [process.env.OPENAI_API_KEY.trim()] : []),
-  ].filter(Boolean);
-
-  // Gemini first
-  geminiKeys.forEach((key, index) => {
-    providers.push({
-      name: "gemini",
-      label: makeProviderLabel("gemini", index),
-      client: new OpenAI({
-        apiKey: key,
-        baseURL: GEMINI_BASE_URL,
-      }),
-      model: process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash",
-      supportsVision: true,
-    });
-  });
-
-  // Groq next
-  groqKeys.forEach((key, index) => {
-    providers.push({
-      name: "groq",
-      label: makeProviderLabel("groq", index),
-      client: new OpenAI({
-        apiKey: key,
-        baseURL: GROQ_BASE_URL,
-      }),
-      model: process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile",
-      supportsVision: false,
-    });
-  });
-
-  // OpenAI after that
-  openaiKeys.forEach((key, index) => {
-    providers.push({
-      name: "openai",
-      label: makeProviderLabel("openai", index),
-      client: new OpenAI({
-        apiKey: key,
-      }),
-      model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-      supportsVision: true,
-    });
-  });
-
-  // Replit proxy last
-  if (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL && process.env.AI_INTEGRATIONS_OPENAI_API_KEY) {
-    providers.push({
-      name: "replit",
-      label: "replit#1",
-      client: new OpenAI({
-        apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-        baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-      }),
-      model: process.env.REPLIT_MODEL?.trim() || "gpt-4o-mini",
-      supportsVision: true,
-    });
+      .join("\n");
   }
 
-  return providers;
+  return String(content ?? "");
 }
 
-const providers = buildProviders();
+function buildPrompt(messages: ChatCreateParams["messages"]): string {
+  const systemParts = messages
+    .filter((m) => m.role === "system")
+    .map((m) => contentToText(m.content))
+    .filter(Boolean);
 
-console.log(
-  "[ai] providers loaded:",
-  providers.map((p) => `${p.label}:${p.model}:${p.supportsVision ? "vision" : "text-only"}`).join(", ") || "none"
-);
+  const otherParts = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => `${m.role.toUpperCase()}:\n${contentToText(m.content)}`)
+    .filter(Boolean);
 
-function hasVisionInput(messages: ChatCreateParams["messages"]): boolean {
-  return messages.some((msg: any) => {
-    const content = msg?.content;
-    return (
-      Array.isArray(content) &&
-      content.some((part: any) => part?.type === "image_url" || part?.type === "input_image")
-    );
+  return [
+    ...systemParts,
+    ...otherParts,
+  ].join("\n\n");
+}
+
+async function callLocalAi(prompt: string): Promise<string> {
+  const url = new URL(LOCAL_AI_API_URL);
+  url.searchParams.set("prompt", prompt);
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
   });
-}
 
-function isRetryableProviderError(error: unknown): boolean {
-  const e = error as any;
+  const text = await res.text();
 
-  const text = [
-    e?.message,
-    e?.error?.message,
-    e?.error?.type,
-    e?.error?.code,
-    e?.code,
-    e?.status,
-    e?.response?.status,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+  if (!res.ok) {
+    throw new Error(`Local AI API failed: ${res.status} ${text.slice(0, 300)}`);
+  }
 
-  return /insufficient_quota|quota|rate\s*limit|too many requests|billing|resource exhausted|429|503|temporarily unavailable/.test(text);
+  let data: any = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Local AI API returned non-JSON response: ${text.slice(0, 300)}`);
+  }
+
+  const answer =
+    data?.answer ??
+    data?.response ??
+    data?.result ??
+    data?.message ??
+    "";
+
+  if (typeof answer !== "string" || !answer.trim()) {
+    throw new Error("Local AI API returned empty answer");
+  }
+
+  return answer.trim();
 }
 
 async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreateResult> {
-  const needsVision = hasVisionInput(params.messages);
-  const candidateProviders = providers.filter((p) => !needsVision || p.supportsVision);
+  const prompt = buildPrompt(params.messages);
 
-  console.log("[ai] request start", {
-    needsVision,
-    totalProviders: providers.length,
-    candidateProviders: candidateProviders.map((p) => p.label),
-    modelFromCall: (params as any)?.model,
-  });
+  console.log("[ai-local] sending prompt to:", LOCAL_AI_API_URL);
+  console.log("[ai-local] prompt length:", prompt.length);
 
-  if (!candidateProviders.length) {
-    throw new Error("No vision-capable AI provider configured. Add a Gemini, OpenAI, or Replit key.");
-  }
+  const answer = await callLocalAi(prompt);
 
-  const errors: string[] = [];
+  console.log("[ai-local] received answer length:", answer.length);
 
-  for (const provider of candidateProviders) {
-    try {
-      console.log("[ai] trying provider:", provider.label, "model:", provider.model);
-
-      const result = await provider.client.chat.completions.create({
-        ...params,
-        model: provider.model,
-      } as ChatCreateParams);
-
-      console.log("[ai] success provider:", provider.label);
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log("[ai] failed provider:", provider.label, "message:", message);
-
-      if (!isRetryableProviderError(error)) {
-        console.log("[ai] non-retryable error, stopping on:", provider.label);
-        throw error;
-      }
-
-      errors.push(`${provider.label}: ${message}`);
-      continue;
-    }
-  }
-
-  throw new Error(`All AI providers exhausted or rate-limited. Tried: ${errors.join(" | ")}`);
+  return {
+    choices: [
+      {
+        message: {
+          content: answer,
+        },
+      },
+    ],
+  };
 }
 
 export const aiClient = {
@@ -193,9 +119,9 @@ export const aiClient = {
       create: createChatCompletion,
     },
   },
-} as unknown as OpenAI;
+} as const;
 
-export const AI_MODEL = providers[0]?.model ?? "gpt-4o-mini";
-export const AI_SUPPORTS_VISION = providers.some((p) => p.supportsVision);
+export const AI_MODEL = "local-api";
+export const AI_SUPPORTS_VISION = false;
 
-export type AIMessage = Parameters<ChatCreate>[0]["messages"][number];
+export type { AIMessage };
