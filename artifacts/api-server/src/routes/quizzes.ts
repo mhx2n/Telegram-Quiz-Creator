@@ -262,6 +262,14 @@ if (!jsonMatch) {
       } catch {}
     }
   }
+  const unique = new Set();
+
+  parsed = parsed.filter(q => {
+    const key = q.question.replace(/\s+/g, "").toLowerCase();
+    if (unique.has(key)) return false;
+    unique.add(key);
+    return true;
+  });
 
   return finalizeQuestions(parsed);
 }
