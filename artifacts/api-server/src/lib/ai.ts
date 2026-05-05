@@ -1,4 +1,4 @@
-import { openai as replitOpenAI } from "@workspace/integrations-openai-ai-server";
+import OpenAI from "openai";
 
 export type AIMessage = {
   role: "system" | "user" | "assistant";
@@ -49,11 +49,19 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 }
 
 async function tryReplitOpenAI(params: ChatParams): Promise<string> {
-  const response = await replitOpenAI.chat.completions.create({
+  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
+  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
+  if (!baseURL || !apiKey) throw new Error("Replit OpenAI env vars not set");
+
+  const client = new OpenAI({ apiKey, baseURL });
+  const response = await client.chat.completions.create({
     model: "gpt-4o-mini",
     max_completion_tokens: params.max_completion_tokens ?? 8000,
     temperature: params.temperature ?? 0.5,
-    messages: params.messages as Parameters<typeof replitOpenAI.chat.completions.create>[0]["messages"],
+    messages: params.messages.map((m) => ({
+      role: m.role,
+      content: contentToText(m.content),
+    })),
   });
   const answer = response.choices[0]?.message?.content ?? "";
   if (!answer.trim()) throw new Error("Replit OpenAI returned empty response");
