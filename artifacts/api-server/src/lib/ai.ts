@@ -1,6 +1,6 @@
 type AIMessage = {
   role: "system" | "user" | "assistant";
-  content: string | Array<{ type: string; [key: string]: unknown }>;
+  content: string;
 };
 
 type ChatCreateParams = {
@@ -8,7 +8,7 @@ type ChatCreateParams = {
 };
 
 type ChatCreateResult = {
-  choices: [{ message: { content: string | null } }];
+  choices: [{ message: { content: string } }];
 };
 
 const AI_PROVIDER_URLS = (process.env.AI_PROVIDER_URLS ?? "")
@@ -16,107 +16,124 @@ const AI_PROVIDER_URLS = (process.env.AI_PROVIDER_URLS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-function contentToText(content: AIMessage["content"]): string {
-  if (typeof content === "string") return content;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GEMINI_API_KEYS = (process.env.GEMINI_API_KEYS ?? "")
+  .split(",")
+  .map((k) => k.trim())
+  .filter(Boolean);
 
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (part.type === "text" && typeof (part as any).text === "string") return (part as any).text;
-        if (part.type === "image_url") return "[IMAGE]";
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  return String(content ?? "");
-}
-
+// 🔧 prompt builder
 function buildPrompt(messages: AIMessage[]): string {
-  return messages
-    .map((m) => `${m.role.toUpperCase()}:\n${contentToText(m.content)}`)
-    .join("\n\n");
+  return messages.map((m) => `${m.role}: ${m.content}`).join("\n");
 }
 
-async function callProvider(providerUrl: string, prompt: string): Promise<string> {
-  const url = new URL(providerUrl);
-  url.searchParams.set("prompt", prompt);
+// =====================
+// 1️⃣ PROVIDER CALL
+// =====================
+async function callProvider(url: string, prompt: string): Promise<string> {
+  const full = new URL(url);
+  full.searchParams.set("prompt", prompt);
 
-  // ✅ SIMPLE FETCH (NO TIMEOUT)
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
-
+  const res = await fetch(full.toString());
   const raw = await res.text();
 
-  if (!res.ok) {
-    throw new Error(`AI provider failed: ${res.status}`);
-  }
-
-  let data: any;
-
   try {
-    data = JSON.parse(raw);
+    const data = JSON.parse(raw);
+    return (
+      data?.response ||
+      data?.answer ||
+      data?.result ||
+      data?.message ||
+      raw
+    );
   } catch {
-    console.log("[ai] raw response (not JSON):", raw.slice(0, 200));
-
-    // ✅ fallback (VERY IMPORTANT)
-    return raw.trim();
-  }
-
-  const answer =
-    data?.response ??
-    data?.answer ??
-    data?.result ??
-    data?.message ??
-    "";
-
-  if (!answer || typeof answer !== "string") {
-    return raw.trim(); // fallback
-  }
-
-  return answer.trim();
-}
-
-// 🔁 simple retry
-async function tryProvider(url: string, prompt: string): Promise<string> {
-  try {
-    return await callProvider(url, prompt);
-  } catch {
-    await new Promise((r) => setTimeout(r, 2000));
-    return await callProvider(url, prompt);
+    return raw; // fallback
   }
 }
 
-async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreateResult> {
-  if (!AI_PROVIDER_URLS.length) {
-    throw new Error("No AI_PROVIDER_URLS configured");
-  }
+// =====================
+// 2️⃣ GROQ CALL
+// =====================
+async function callGroq(prompt: string): Promise<string> {
+  if (!GROQ_API_KEY) throw new Error("No GROQ key");
 
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "llama3-70b-8192",
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
+// =====================
+// 3️⃣ GEMINI CALL
+// =====================
+async function callGemini(prompt: string): Promise<string> {
+  if (!GEMINI_API_KEYS.length) throw new Error("No Gemini key");
+
+  const key = GEMINI_API_KEYS[Math.floor(Math.random() * GEMINI_API_KEYS.length)];
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+      }),
+    }
+  );
+
+  const data = await res.json();
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
+
+// =====================
+// 🚀 MAIN FALLBACK FLOW
+// =====================
+async function createChatCompletion(
+  params: ChatCreateParams
+): Promise<ChatCreateResult> {
   const prompt = buildPrompt(params.messages);
-  const errors: string[] = [];
 
-  for (const providerUrl of AI_PROVIDER_URLS) {
+  // 1️⃣ Provider
+  for (const url of AI_PROVIDER_URLS) {
     try {
-      console.log("[ai] trying:", providerUrl);
-
-      const answer = await tryProvider(providerUrl, prompt);
-
-      console.log("[ai] success:", providerUrl);
-
-      return {
-        choices: [{ message: { content: answer } }],
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.log("[ai] failed:", providerUrl, message);
-      errors.push(`${providerUrl}: ${message}`);
+      console.log("TRY PROVIDER:", url);
+      const res = await callProvider(url, prompt);
+      if (res) return { choices: [{ message: { content: res } }] };
+    } catch (e) {
+      console.log("Provider failed");
     }
   }
 
-  throw new Error(`All AI providers failed:\n${errors.join("\n")}`);
+  // 2️⃣ Groq
+  try {
+    console.log("TRY GROQ");
+    const res = await callGroq(prompt);
+    if (res) return { choices: [{ message: { content: res } }] };
+  } catch {
+    console.log("Groq failed");
+  }
+
+  // 3️⃣ Gemini
+  try {
+    console.log("TRY GEMINI");
+    const res = await callGemini(prompt);
+    if (res) return { choices: [{ message: { content: res } }] };
+  } catch {
+    console.log("Gemini failed");
+  }
+
+  throw new Error("ALL AI FAILED ❌");
 }
 
 export const aiClient = {
@@ -127,7 +144,5 @@ export const aiClient = {
   },
 } as const;
 
-export const AI_MODEL = "http-wrapper";
+export const AI_MODEL = "fallback-system";
 export const AI_SUPPORTS_VISION = false;
-
-export type { AIMessage };
