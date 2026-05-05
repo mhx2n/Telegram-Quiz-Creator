@@ -34,31 +34,47 @@ function contentToText(content: AIMessage["content"]): string {
 }
 
 function buildPrompt(messages: AIMessage[]): string {
-  return messages
+  const raw = messages
     .map((m) => `${m.role.toUpperCase()}:\n${contentToText(m.content)}`)
     .join("\n\n");
+
+  // 🔥 LIMIT PROMPT SIZE (VERY IMPORTANT)
+  return raw.slice(0, 4000);
+}
+
+// ⏱ timeout helper
+async function fetchWithTimeout(url: string, timeout = 20000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    return await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 async function callProvider(providerUrl: string, prompt: string): Promise<string> {
   const url = new URL(providerUrl);
   url.searchParams.set("prompt", prompt);
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetchWithTimeout(url.toString(), 20000); // ⏱ 20 sec max
 
   const raw = await res.text();
 
   if (!res.ok) {
-    throw new Error(`AI provider failed: ${res.status} ${raw.slice(0, 250)}`);
+    throw new Error(`AI provider failed: ${res.status} ${raw.slice(0, 200)}`);
   }
 
   let data: any;
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("AI provider returned non-JSON response");
+    throw new Error("AI provider returned non-JSON");
   }
 
   const answer =
@@ -68,11 +84,31 @@ async function callProvider(providerUrl: string, prompt: string): Promise<string
     data?.message ??
     "";
 
-  if (typeof answer !== "string" || !answer.trim()) {
-    throw new Error("AI provider returned empty response");
+  if (!answer || typeof answer !== "string") {
+    throw new Error("Empty response");
   }
 
   return answer.trim();
+}
+
+async function tryProviderWithRetry(url: string, prompt: string): Promise<string> {
+  const retries = 2;
+
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await callProvider(url, prompt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+
+      console.log(`[ai] retry ${i} failed:`, url, msg);
+
+      if (i === retries) throw err;
+
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  throw new Error("Retry failed");
 }
 
 async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreateResult> {
@@ -86,20 +122,26 @@ async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreat
   for (const providerUrl of AI_PROVIDER_URLS) {
     try {
       console.log("[ai] trying:", providerUrl);
-      const answer = await callProvider(providerUrl, prompt);
+
+      const answer = await tryProviderWithRetry(providerUrl, prompt);
+
       console.log("[ai] success:", providerUrl);
+
       return {
         choices: [{ message: { content: answer } }],
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      errors.push(`${providerUrl}: ${message}`);
+
       console.log("[ai] failed:", providerUrl, message);
+
+      errors.push(`${providerUrl}: ${message}`);
+
       continue;
     }
   }
 
-  throw new Error(`All AI providers failed. Tried: ${errors.join(" | ")}`);
+  throw new Error(`All AI providers failed:\n${errors.join("\n")}`);
 }
 
 export const aiClient = {
