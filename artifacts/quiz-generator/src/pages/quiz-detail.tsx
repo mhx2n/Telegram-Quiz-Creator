@@ -33,6 +33,8 @@ import { Switch } from "@/components/ui/switch";
 import { exportQuizAsPDF, defaultPdfOptions, type PdfOptions, type PdfTheme, type PdfContentMode } from "@/lib/pdf-export";
 import { exportQuizAsCSV, exportQuizAsJSON } from "@/lib/csv-export";
 
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "") ?? "";
+
 // ── Types ────────────────────────────────────────────────────────────────────
 interface QuizQuestion {
   question: string;
@@ -334,7 +336,7 @@ export default function QuizDetail() {
         setPostProgress(100);
       }
 
-      await fetch(`/api/quizzes/${numId}/mark-posted`, {
+      await fetch(`${API_BASE}/api/quizzes/${numId}/mark-posted`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channelId }),
       });
 
@@ -366,7 +368,7 @@ export default function QuizDetail() {
       while (remaining > 0) {
         const batch = Math.min(5, remaining);
 
-        const r = await fetch(`/api/quizzes/${numId}/add-questions`, {
+        const r = await fetch(`${API_BASE}/api/quizzes/${numId}/add-questions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ additionalCount: batch, language: "Bengali" }),
