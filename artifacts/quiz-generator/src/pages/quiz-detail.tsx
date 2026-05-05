@@ -352,7 +352,14 @@ export default function QuizDetail() {
   // ── Generate more ─────────────────────────────────────────────────────────
   const handleGenerateMore = async () => {
     setGeneratingMore(true);
-
+    if (questions.length + moreCount > 30) {
+      toast({
+        title: "Limit exceeded",
+        description: "Max 30 questions allowed",
+        variant: "destructive"
+      });
+      return;
+    }
     try {
       let remaining = moreCount;
 
