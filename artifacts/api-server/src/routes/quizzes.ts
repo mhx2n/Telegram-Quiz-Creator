@@ -248,17 +248,7 @@ ${existingCtx}`,
     }
   }
 
-  return finalizeQuestions(
-    parsed.filter(
-      (q) =>
-        q.question &&
-        Array.isArray(q.options) &&
-        q.options.length === 4 &&
-        typeof q.correctOptionIndex === "number" &&
-        q.correctOptionIndex >= 0 &&
-        q.correctOptionIndex <= 3
-    )
-  );
+  return finalizeQuestions(parsed);
 }
 
 router.get("/quizzes", async (req, res) => {
@@ -395,7 +385,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
   }
 
   try {
-    const existingQuestions = (quiz.questions ?? []) as QuizQuestion[];
+    const existingQuestions = toRenderableQuestions((quiz.questions ?? []) as QuizQuestion[]);
     const sourceContent = quiz.sourceContent ?? "";
 
     const userText = sourceContent.trim()
@@ -484,7 +474,7 @@ router.put("/quizzes/:id", async (req, res) => {
   if (bodyParsed.data.title) updates.title = bodyParsed.data.title;
 
   if (bodyParsed.data.questions) {
-    const normalizedQuestions = finalizeQuestions(bodyParsed.data.questions as QuizQuestion[]);
+    const normalizedQuestions = cleanQuestionsForStorage(bodyParsed.data.questions as QuizQuestion[]);
     updates.questions = normalizedQuestions;
     updates.questionCount = normalizedQuestions.length;
   }
@@ -547,11 +537,11 @@ router.post("/quizzes/:id/post-to-telegram", async (req, res) => {
   for (const q of toPost) {
     const payload = {
       chat_id: channelId,
-      question: q.question,
-      options: q.options,
+      question: plainTextify(q.question),
+      options: q.options.map((o) => plainTextify(o)),
       type: "quiz",
       correct_option_id: q.correctOptionIndex,
-      explanation: q.explanation || undefined,
+      explanation: q.explanation ? plainTextify(q.explanation) : undefined,
       is_anonymous: true,
     };
 
@@ -595,7 +585,7 @@ router.get("/quizzes/:id/export", async (req, res) => {
     return;
   }
 
-  const questions = quiz.questions as QuizQuestion[];
+  const questions = toRenderableQuestions((quiz.questions ?? []) as QuizQuestion[]);
   const format = queryParsed.data.format;
 
   if (format === "json") {
@@ -615,11 +605,12 @@ router.get("/quizzes/:id/export", async (req, res) => {
 });
 
 function formatQuiz(quiz: typeof quizzesTable.$inferSelect) {
+  const questions = toRenderableQuestions((quiz.questions ?? []) as QuizQuestion[]);
   return {
     id: quiz.id,
     title: quiz.title,
     sourceContent: quiz.sourceContent,
-    questions: quiz.questions,
+    questions,
     questionCount: quiz.questionCount,
     createdAt: quiz.createdAt,
     updatedAt: quiz.updatedAt,
