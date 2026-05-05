@@ -16,15 +16,32 @@ import { aiClient as openai, AI_MODEL, AI_SUPPORTS_VISION, type AIMessage } from
 
 const router = Router();
 
-type QuizQuestion = {
-  question: string;
-  options: string[];
-  correctOptionIndex: number;
-  explanation?: string;
-};
+function plainTextify(input: string): string {
+  return input
+    .replace(/\$\s*([^$]+?)\s*\$/g, "$1")
+    .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)")
+    .replace(/\\sqrt\{([^{}]+)\}/g, "sqrt($1)")
+    .replace(/\\left|\\right/g, "")
+    .replace(/\\cdot|\\times/g, "×")
+    .replace(/\\pi/g, "pi")
+    .replace(/\\theta/g, "theta")
+    .replace(/\\ln/g, "ln")
+    .replace(/\\log/g, "log")
+    .replace(/\\sin/g, "sin")
+    .replace(/\\cos/g, "cos")
+    .replace(/\\tan/g, "tan")
+    .replace(/\\[a-zA-Z]+/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasLatexNoise(text: string): boolean {
+  return /\\[a-zA-Z]+|\$|\\frac|\\sqrt/.test(text);
+}
 
 function normalizeQuestion(q: QuizQuestion): QuizQuestion | null {
-  const question = q.question?.trim();
+  const question = String(q.question ?? "").trim();
   const options = Array.isArray(q.options)
     ? q.options.map((opt) => String(opt ?? "").trim())
     : [];
@@ -41,6 +58,32 @@ function normalizeQuestion(q: QuizQuestion): QuizQuestion | null {
     correctOptionIndex: q.correctOptionIndex,
     explanation: q.explanation?.trim() || undefined,
   };
+}
+
+function sanitizeQuestion(q: QuizQuestion): QuizQuestion | null {
+  const normalized = normalizeQuestion(q);
+  if (!normalized) return null;
+
+  const originalJoined = [
+    normalized.question,
+    ...normalized.options,
+    normalized.explanation ?? "",
+  ].join(" ");
+
+  if (hasLatexNoise(originalJoined)) return null;
+
+  return {
+    question: plainTextify(normalized.question),
+    options: normalized.options.map(plainTextify),
+    correctOptionIndex: normalized.correctOptionIndex,
+    explanation: normalized.explanation ? plainTextify(normalized.explanation) : undefined,
+  };
+}
+
+function cleanQuestionsForStorage(questions: QuizQuestion[]): QuizQuestion[] {
+  return questions
+    .map(sanitizeQuestion)
+    .filter((q): q is QuizQuestion => Boolean(q));
 }
 
 function shuffleQuestionOptions(q: QuizQuestion): QuizQuestion {
@@ -66,10 +109,11 @@ function shuffleQuestionOptions(q: QuizQuestion): QuizQuestion {
 }
 
 function finalizeQuestions(questions: QuizQuestion[]): QuizQuestion[] {
-  return questions
-    .map(normalizeQuestion)
-    .filter((q): q is QuizQuestion => Boolean(q))
-    .map(shuffleQuestionOptions);
+  return cleanQuestionsForStorage(questions).map(shuffleQuestionOptions);
+}
+
+function toRenderableQuestions(questions: QuizQuestion[]): QuizQuestion[] {
+  return cleanQuestionsForStorage(questions);
 }
 
 const CATEGORY_PROMPTS: Record<string, string> = {
