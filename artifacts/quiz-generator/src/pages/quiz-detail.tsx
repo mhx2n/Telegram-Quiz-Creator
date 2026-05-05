@@ -827,7 +827,7 @@ export default function QuizDetail() {
             <div className="space-y-2">
               <Label className="text-sm font-medium">কতটি প্রশ্ন যোগ করবেন?</Label>
               <div className="flex items-center gap-3">
-                <Input type="number" min={1} max={50} value={moreCount} onChange={e => setMoreCount(Math.max(1, Math.min(50, parseInt(e.target.value)||5)))} className="w-24" />
+                <Input type="number" min={1} max={10} value={moreCount} onChange={e => setMoreCount(Math.max(1, Math.min(50, parseInt(e.target.value)||5)))} className="w-24" />
                 <span className="text-sm text-muted-foreground">টি (সর্বোচ্চ ৫০)</span>
               </div>
             </div>
