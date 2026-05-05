@@ -198,6 +198,10 @@ STRICT RULES:
 9. Randomize the order of options for every question so the correct answer does not stay in the same position repeatedly
 10. Keep the correct answer factually accurate after randomization
 11. Output ONLY a valid JSON array — no markdown, no extra text, no comments
+12. Do NOT use LaTeX, TeX, Markdown math, or dollar signs.
+13. Write all formulas in plain text only, like x^2, sqrt(x), pi, dx/dy.
+14. Every question must be directly answerable from the provided content.
+15. If the answer is uncertain, do not generate that question.
 
 Return format:
 [{"question":"...","options":["A text","B text","C text","D text"],"correctOptionIndex":0,"explanation":"..."}]
