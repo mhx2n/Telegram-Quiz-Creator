@@ -47,14 +47,3 @@ Thumbs.db
 # Replit
 .cache/
 .local/
-.replit
-replit.nix
-.config/
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Build outputs
-artifacts/*/dist/
