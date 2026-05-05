@@ -352,21 +352,39 @@ export default function QuizDetail() {
   // ── Generate more ─────────────────────────────────────────────────────────
   const handleGenerateMore = async () => {
     setGeneratingMore(true);
+
     try {
-      const r = await fetch(`/api/quizzes/${numId}/add-questions`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ additionalCount: moreCount, language: "Bengali" }),
-      });
-      const data = await r.json() as { addedCount?: number; error?: string };
-      if (!r.ok) throw new Error(data.error ?? "Failed");
+      let remaining = moreCount;
+
+      while (remaining > 0) {
+        const batch = Math.min(5, remaining);
+
+        const r = await fetch(`/api/quizzes/${numId}/add-questions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ additionalCount: batch, language: "Bengali" }),
+        });
+
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Failed");
+
+        remaining -= batch;
+      }
+
       queryClient.invalidateQueries({ queryKey: getGetQuizQueryKey(numId) });
-      queryClient.invalidateQueries({ queryKey: getListQuizzesQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetQuizStatsQueryKey() });
-      toast({ title: `✅ ${data.addedCount ?? moreCount}টি প্রশ্ন যোগ হয়েছে!` });
+
+      toast({ title: `✅ ${moreCount}টি প্রশ্ন যোগ হয়েছে!` });
       setShowGenerateMore(false);
+
     } catch (err) {
-      toast({ title: "প্রশ্ন তৈরি করতে ব্যর্থ", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
-    } finally { setGeneratingMore(false); }
+      toast({
+        title: "প্রশ্ন তৈরি করতে ব্যর্থ",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive"
+      });
+    } finally {
+      setGeneratingMore(false);
+    }
   };
 
   // ── Edit helpers ──────────────────────────────────────────────────────────
@@ -827,8 +845,8 @@ export default function QuizDetail() {
             <div className="space-y-2">
               <Label className="text-sm font-medium">কতটি প্রশ্ন যোগ করবেন?</Label>
               <div className="flex items-center gap-3">
-                <Input type="number" min={1} max={10} value={moreCount} onChange={e => setMoreCount(Math.max(1, Math.min(50, parseInt(e.target.value)||5)))} className="w-24" />
-                <span className="text-sm text-muted-foreground">টি (সর্বোচ্চ ৫০)</span>
+                <Input type="number" min={1} max={10} value={moreCount} onChange={e => setMoreCount(Math.max(1, Math.min(10, parseInt(e.target.value)||5)))} className="w-24" />
+                <span className="text-sm text-muted-foreground">টি (সর্বোচ্চ ১০)</span>
               </div>
             </div>
             <div className="bg-muted/50 rounded-xl px-3 py-2.5 text-sm">
