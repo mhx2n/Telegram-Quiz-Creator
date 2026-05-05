@@ -210,50 +210,45 @@ ${existingCtx}`,
 
   const callMessages: AIMessage[] = [systemMsg, ...messages];
 
+  const response = await openai.chat.completions.create({
+    model: AI_MODEL,
+    max_completion_tokens: 16000,
+    temperature: 0.5,
+    messages: callMessages,
+  });
 
-  const MAX_PER_REQUEST = 5;
-  let finalQuestions = [];
-  const unique = new Set<string>();
-  let attempts = 0;
-  let startTime = Date.now();
-  while (finalQuestions.length < count && attempts < 10) {
-    if (Date.now() - startTime > 12000) break;
-    attempts++;
+  const raw = response.choices[0]?.message?.content ?? "[]";
 
-    const response = await openai.chat.completions.create({
-      model: AI_MODEL,
-      messages: callMessages,
-      max_completion_tokens: 1500,
-      temperature: 0.3,
-    });
+  let cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
-    const raw = response.choices[0]?.message?.content || "";
-    if (!raw || raw.length < 10) continue;
-    const start = raw.indexOf("[");
-    const end = raw.lastIndexOf("]");
+  const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    return [];
+  }
+  let jsonStr = jsonMatch[0];
 
-    if (start !== -1 && end !== -1) {
+  jsonStr = jsonStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  jsonStr = jsonStr.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+  jsonStr = jsonStr.replace(/,(\s*[}\]])/g, "$1");
+
+  let parsed: QuizQuestion[];
+  try {
+    parsed = JSON.parse(jsonStr) as QuizQuestion[];
+  } catch {
+    const objMatches = jsonStr.match(/\{[^{}]*"question"[^{}]*\}/g) ?? [];
+    parsed = [];
+    for (const objStr of objMatches) {
       try {
-        const parsed = JSON.parse(raw.slice(start, end + 1));
-        
-        for (const q of parsed) {
-          const key = (q.question || "")
-            .replace(/\s+/g, "")
-            .toLowerCase();
-
-          if (!unique.has(key)) {
-            unique.add(key);
-            finalQuestions.push(q);
-          }
-        }
+        parsed.push(JSON.parse(objStr) as QuizQuestion);
       } catch {}
     }
-
-    await new Promise(r => setTimeout(r, 800));
   }
 
-  return finalizeQuestions(finalQuestions);
-
+  return finalizeQuestions(parsed);
 }
 
 router.get("/quizzes", async (req, res) => {
@@ -299,7 +294,7 @@ router.post("/quizzes", async (req, res) => {
 
     const userMessage: AIMessage = { role: "user", content: baseUserContent };
 
-    const BATCH = 5;
+    const BATCH = 20;
     let allQuestions: QuizQuestion[] = [];
 
     if (questionCount <= BATCH) {
@@ -381,7 +376,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
     category?: string;
   };
 
-  const count = Math.max(1, Math.min(20, Number(additionalCount) || 5));
+  const count = Math.max(1, Math.min(50, Number(additionalCount) || 5));
 
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, idNum));
   if (!quiz) {
