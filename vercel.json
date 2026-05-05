@@ -1,10 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/*.ts": {
-      "maxDuration": 15
-    }
-  },
   "buildCommand": "pnpm install && pnpm --filter @workspace/quiz-generator run build",
   "outputDirectory": "artifacts/quiz-generator/dist/public",
   "installCommand": "pnpm install",
