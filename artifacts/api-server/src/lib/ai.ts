@@ -34,18 +34,30 @@ async function callProvider(url: string, prompt: string): Promise<string> {
   const full = new URL(url);
   full.searchParams.set("prompt", prompt);
 
-  const res = await fetch(full.toString());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  const res = await fetch(full.toString(), {
+    signal: controller.signal,
+  });
+
+  clearTimeout(timeout);
   const raw = await res.text();
 
   try {
     const data = JSON.parse(raw);
-    return (
+    const text =
       data?.response ||
       data?.answer ||
       data?.result ||
       data?.message ||
-      raw
-    );
+      raw;
+
+    if (!text || text.trim().length < 20) {
+      throw new Error("Empty or weak response");
+    }
+
+    return text;
   } catch {
     return raw; // fallback
   }
@@ -57,6 +69,9 @@ async function callProvider(url: string, prompt: string): Promise<string> {
 async function callGroq(prompt: string): Promise<string> {
   if (!GROQ_API_KEY) throw new Error("No GROQ key");
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -67,10 +82,19 @@ async function callGroq(prompt: string): Promise<string> {
       model: "llama3-70b-8192",
       messages: [{ role: "user", content: prompt }],
     }),
+    signal: controller.signal,
   });
 
+  clearTimeout(timeout);
+
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || "";
+  const text = data.choices?.[0]?.message?.content || "";
+
+  if (!text || text.length < 20) {
+    throw new Error("Groq empty");
+  }
+
+  return text;
 }
 
 // =====================
@@ -81,6 +105,9 @@ async function callGemini(prompt: string): Promise<string> {
 
   const key = GEMINI_API_KEYS[Math.floor(Math.random() * GEMINI_API_KEYS.length)];
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`,
     {
@@ -89,13 +116,21 @@ async function callGemini(prompt: string): Promise<string> {
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
       }),
+      signal: controller.signal,
     }
   );
 
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-}
+  clearTimeout(timeout);
 
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  if (!text || text.length < 20) {
+    throw new Error("Gemini empty");
+  }
+
+  return text;
+}
 // =====================
 // 🚀 MAIN FALLBACK FLOW
 // =====================
@@ -109,7 +144,9 @@ async function createChatCompletion(
     try {
       console.log("TRY PROVIDER:", url);
       const res = await callProvider(url, prompt);
-      if (res) return { choices: [{ message: { content: res } }] };
+      if (res && res.includes("question")) {
+        return { choices: [{ message: { content: res } }] };
+      }
     } catch (e) {
       console.log("Provider failed");
     }
@@ -119,7 +156,9 @@ async function createChatCompletion(
   try {
     console.log("TRY GROQ");
     const res = await callGroq(prompt);
-    if (res) return { choices: [{ message: { content: res } }] };
+    if (res && res.includes("question")) {
+      return { choices: [{ message: { content: res } }] };
+    }
   } catch {
     console.log("Groq failed");
   }
@@ -128,7 +167,9 @@ async function createChatCompletion(
   try {
     console.log("TRY GEMINI");
     const res = await callGemini(prompt);
-    if (res) return { choices: [{ message: { content: res } }] };
+    if (res && res.includes("question")) {
+      return { choices: [{ message: { content: res } }] };
+    }
   } catch {
     console.log("Gemini failed");
   }
