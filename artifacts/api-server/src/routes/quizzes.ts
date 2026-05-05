@@ -226,9 +226,24 @@ ${existingCtx}`,
     .trim();
 
   const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    return [];
-  }
+if (!jsonMatch) {
+  console.log("AI gave invalid format, retrying...");
+  
+  // retry once
+  const retryResponse = await openai.chat.completions.create({
+    model: AI_MODEL,
+    max_completion_tokens: 8000,
+    temperature: 0.3,
+    messages: messages,
+  });
+
+  const retryRaw = retryResponse.choices[0]?.message?.content ?? "[]";
+  const retryMatch = retryRaw.match(/\[[\s\S]*\]/);
+
+  if (!retryMatch) return [];
+
+  jsonStr = retryMatch[0];
+}
   let jsonStr = jsonMatch[0];
 
   jsonStr = jsonStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
@@ -319,7 +334,21 @@ router.post("/quizzes", async (req, res) => {
         const batchResult = await generateQuestionsFromMessages([batchMsg], batchSize, language, category, allQuestions);
         allQuestions = [...allQuestions, ...batchResult];
         batchNum++;
-        if (batchResult.length === 0) break;
+        if (batchResult.length === 0) {
+          console.log("Batch failed, retrying once...");
+  
+          const retry = await generateQuestionsFromMessages(
+            [batchMsg],
+            batchSize,
+            language,
+            category,
+            allQuestions
+          );
+
+          if (retry.length === 0) break;
+
+          allQuestions = [...allQuestions, ...retry];
+        }
       }
     }
 
@@ -422,8 +451,10 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
     newQuestions = finalizeQuestions(newQuestions);
 
     if (newQuestions.length === 0) {
-      res.status(500).json({ error: "Failed to generate additional questions." });
-      return;
+      return res.json({
+        addedCount: 0,
+        warning: "AI couldn't generate new questions"
+      });
     }
 
     const merged = finalizeQuestions([...existingQuestions, ...newQuestions]);
