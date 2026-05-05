@@ -6,4 +6,16 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./botInfo";
+export * from "./exportQuizFormat";
+export * from "./exportQuizParams";
+export * from "./exportResult";
+export * from "./generateQuizBody";
 export * from "./healthStatus";
+export * from "./postToTelegramBody";
+export * from "./quiz";
+export * from "./quizQuestion";
+export * from "./quizStats";
+export * from "./telegramPostResult";
+export * from "./updateQuizBody";
+export * from "./validateBotBody";
