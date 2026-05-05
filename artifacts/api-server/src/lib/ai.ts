@@ -1,3 +1,5 @@
+import { openai as replitOpenAI } from "@workspace/integrations-openai-ai-server";
+
 export type AIMessage = {
   role: "system" | "user" | "assistant";
   content: string | Array<{ type: string; [key: string]: unknown }>;
@@ -46,36 +48,26 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   }
 }
 
-async function tryExternalUrl(messages: AIMessage[]): Promise<string> {
-  const base = "https://gemini-prplexity.onrender.com/api/ask";
-  const prompt = buildPrompt(messages);
-  const url = new URL(base);
-  url.searchParams.set("prompt", prompt);
-
-  const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Accept: "application/json" } }, 60000);
-  const raw = await res.text();
-  if (!res.ok) throw new Error(`External AI ${res.status}: ${raw.slice(0, 200)}`);
-
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error("External AI returned non-JSON");
-  }
-
-  const answer = (data?.response ?? data?.answer ?? data?.result ?? data?.message ?? data?.text ?? "") as string;
-  if (!answer?.trim()) throw new Error("External AI returned empty response");
+async function tryReplitOpenAI(params: ChatParams): Promise<string> {
+  const response = await replitOpenAI.chat.completions.create({
+    model: "gpt-4o-mini",
+    max_completion_tokens: params.max_completion_tokens ?? 8000,
+    temperature: params.temperature ?? 0.5,
+    messages: params.messages as Parameters<typeof replitOpenAI.chat.completions.create>[0]["messages"],
+  });
+  const answer = response.choices[0]?.message?.content ?? "";
+  if (!answer.trim()) throw new Error("Replit OpenAI returned empty response");
   return answer.trim();
 }
 
-async function tryGroq(messages: AIMessage[], params: ChatParams): Promise<string> {
+async function tryGroq(params: ChatParams): Promise<string> {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error("GROQ_API_KEY not set");
 
   const body = {
     model: "llama-3.1-8b-instant",
-    messages: messages.map((m) => ({ role: m.role, content: contentToText(m.content) })),
-    max_tokens: params.max_completion_tokens ?? 8000,
+    messages: params.messages.map((m) => ({ role: m.role, content: contentToText(m.content) })),
+    max_tokens: Math.min(params.max_completion_tokens ?? 8000, 8000),
     temperature: params.temperature ?? 0.5,
   };
 
@@ -97,12 +89,12 @@ async function tryGroq(messages: AIMessage[], params: ChatParams): Promise<strin
   return answer.trim();
 }
 
-async function tryGemini(messages: AIMessage[], params: ChatParams): Promise<string> {
+async function tryGemini(params: ChatParams): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
 
-  const systemMsg = messages.find((m) => m.role === "system");
-  const userMsgs = messages.filter((m) => m.role !== "system");
+  const systemMsg = params.messages.find((m) => m.role === "system");
+  const userMsgs = params.messages.filter((m) => m.role !== "system");
 
   const contents = userMsgs.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
@@ -121,9 +113,8 @@ async function tryGemini(messages: AIMessage[], params: ChatParams): Promise<str
     body.systemInstruction = { parts: [{ text: contentToText(systemMsg.content) }] };
   }
 
-  const model = "gemini-2.0-flash";
   const res = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     45000,
   );
@@ -140,62 +131,43 @@ async function tryGemini(messages: AIMessage[], params: ChatParams): Promise<str
   return answer.trim();
 }
 
-async function tryReplitOpenAI(messages: AIMessage[], params: ChatParams): Promise<string> {
-  const baseUrl = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
-  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-  if (!baseUrl || !apiKey) throw new Error("Replit OpenAI integration not configured");
+async function tryExternalUrl(messages: AIMessage[]): Promise<string> {
+  const prompt = buildPrompt(messages);
+  const url = new URL("https://gemini-prplexity.onrender.com/api/ask");
+  url.searchParams.set("prompt", prompt);
 
-  const body = {
-    model: "gpt-4o-mini",
-    messages: messages.map((m) => ({ role: m.role, content: contentToText(m.content) })),
-    max_completion_tokens: params.max_completion_tokens ?? 8000,
-    temperature: params.temperature ?? 0.5,
-  };
-
-  const res = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-  }, 45000);
-
+  const res = await fetchWithTimeout(url.toString(), { method: "GET", headers: { Accept: "application/json" } }, 20000);
   const raw = await res.text();
-  if (!res.ok) {
-    if (res.status === 429) throw new Error("RATE_LIMIT: Replit OpenAI rate limited");
-    throw new Error(`Replit OpenAI ${res.status}: ${raw.slice(0, 200)}`);
-  }
+  if (!res.ok) throw new Error(`External AI ${res.status}: ${raw.slice(0, 200)}`);
 
-  const data = JSON.parse(raw) as { choices: [{ message: { content: string } }] };
-  const answer = data?.choices?.[0]?.message?.content ?? "";
-  if (!answer.trim()) throw new Error("Replit OpenAI returned empty response");
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(raw); } catch { throw new Error("External AI returned non-JSON"); }
+
+  const answer = (data?.response ?? data?.answer ?? data?.result ?? data?.message ?? data?.text ?? "") as string;
+  if (!answer?.trim()) throw new Error("External AI returned empty response");
   return answer.trim();
 }
 
-type Provider = { name: string; fn: (msgs: AIMessage[], params: ChatParams) => Promise<string> };
-
-function getProviders(params: ChatParams): Provider[] {
-  return [
-    { name: "external", fn: (msgs) => tryExternalUrl(msgs) },
-    { name: "groq", fn: (msgs) => tryGroq(msgs, params) },
-    { name: "gemini", fn: (msgs) => tryGemini(msgs, params) },
-    { name: "replit-openai", fn: (msgs) => tryReplitOpenAI(msgs, params) },
-  ];
-}
-
 async function createChatCompletion(params: ChatParams): Promise<ChatResult> {
-  const providers = getProviders(params);
+  const providers = [
+    { name: "replit-openai", fn: () => tryReplitOpenAI(params) },
+    { name: "groq",          fn: () => tryGroq(params) },
+    { name: "gemini",        fn: () => tryGemini(params) },
+    { name: "external-url",  fn: () => tryExternalUrl(params.messages) },
+  ];
+
   const errors: string[] = [];
 
   for (const provider of providers) {
     try {
       console.log(`[ai] trying: ${provider.name}`);
-      const answer = await provider.fn(params.messages, params);
+      const answer = await provider.fn();
       console.log(`[ai] success: ${provider.name}`);
       return { choices: [{ message: { content: answer } }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`[${provider.name}] ${msg}`);
       console.log(`[ai] failed: ${provider.name} — ${msg}`);
-      continue;
     }
   }
 
@@ -203,11 +175,7 @@ async function createChatCompletion(params: ChatParams): Promise<ChatResult> {
 }
 
 export const aiClient = {
-  chat: {
-    completions: {
-      create: createChatCompletion,
-    },
-  },
+  chat: { completions: { create: createChatCompletion } },
 } as const;
 
 export const AI_MODEL = "multi-provider";
