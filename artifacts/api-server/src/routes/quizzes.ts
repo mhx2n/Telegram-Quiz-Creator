@@ -215,8 +215,9 @@ ${existingCtx}`,
   let finalQuestions = [];
   const unique = new Set<string>();
   let attempts = 0;
-
+  let startTime = Date.now();
   while (finalQuestions.length < count && attempts < 10) {
+    if (Date.now() - startTime > 12000) break;
     attempts++;
 
     const response = await openai.chat.completions.create({
@@ -298,7 +299,7 @@ router.post("/quizzes", async (req, res) => {
 
     const userMessage: AIMessage = { role: "user", content: baseUserContent };
 
-    const BATCH = 20;
+    const BATCH = 5;
     let allQuestions: QuizQuestion[] = [];
 
     if (questionCount <= BATCH) {
@@ -380,7 +381,7 @@ router.post("/quizzes/:id/add-questions", async (req, res) => {
     category?: string;
   };
 
-  const count = Math.max(1, Math.min(30, Number(additionalCount) || 5));
+  const count = Math.max(1, Math.min(20, Number(additionalCount) || 5));
 
   const [quiz] = await db.select().from(quizzesTable).where(eq(quizzesTable.id, idNum));
   if (!quiz) {
