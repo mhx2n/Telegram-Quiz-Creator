@@ -1,24 +1,20 @@
+type AIMessage = {
+  role: "system" | "user" | "assistant";
+  content: string | Array<{ type: string; [key: string]: unknown }>;
+};
+
 type ChatCreateParams = {
-  messages: Array<{
-    role: "system" | "user" | "assistant";
-    content: string | Array<{ type: string; [key: string]: unknown }>;
-  }>;
-  model?: string;
-  max_completion_tokens?: number;
-  temperature?: number;
+  messages: AIMessage[];
 };
 
 type ChatCreateResult = {
-  choices: Array<{
-    message: {
-      content: string | null;
-    };
-  }>;
+  choices: [{ message: { content: string | null } }];
 };
 
-type AIMessage = ChatCreateParams["messages"][number];
-
-const LOCAL_AI_API_URL = process.env.LOCAL_AI_API_URL?.trim() || "http://127.0.0.1:5000/api/ask";
+const AI_PROVIDER_URLS = (process.env.AI_PROVIDER_URLS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function contentToText(content: AIMessage["content"]): string {
   if (typeof content === "string") return content;
@@ -26,8 +22,8 @@ function contentToText(content: AIMessage["content"]): string {
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        if (part.type === "text" && typeof part.text === "string") return part.text;
-        if (part.type === "image_url") return "[IMAGE ATTACHED]";
+        if (part.type === "text" && typeof (part as any).text === "string") return (part as any).text;
+        if (part.type === "image_url") return "[IMAGE]";
         return "";
       })
       .filter(Boolean)
@@ -37,80 +33,73 @@ function contentToText(content: AIMessage["content"]): string {
   return String(content ?? "");
 }
 
-function buildPrompt(messages: ChatCreateParams["messages"]): string {
-  const systemParts = messages
-    .filter((m) => m.role === "system")
-    .map((m) => contentToText(m.content))
-    .filter(Boolean);
-
-  const otherParts = messages
-    .filter((m) => m.role !== "system")
+function buildPrompt(messages: AIMessage[]): string {
+  return messages
     .map((m) => `${m.role.toUpperCase()}:\n${contentToText(m.content)}`)
-    .filter(Boolean);
-
-  return [
-    ...systemParts,
-    ...otherParts,
-  ].join("\n\n");
+    .join("\n\n");
 }
 
-async function callLocalAi(prompt: string): Promise<string> {
-  const url = new URL(LOCAL_AI_API_URL);
+async function callProvider(providerUrl: string, prompt: string): Promise<string> {
+  const url = new URL(providerUrl);
   url.searchParams.set("prompt", prompt);
 
   const res = await fetch(url.toString(), {
     method: "GET",
-    headers: {
-      Accept: "application/json",
-    },
+    headers: { Accept: "application/json" },
   });
 
-  const text = await res.text();
+  const raw = await res.text();
 
   if (!res.ok) {
-    throw new Error(`Local AI API failed: ${res.status} ${text.slice(0, 300)}`);
+    throw new Error(`AI provider failed: ${res.status} ${raw.slice(0, 250)}`);
   }
 
-  let data: any = null;
+  let data: any;
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(raw);
   } catch {
-    throw new Error(`Local AI API returned non-JSON response: ${text.slice(0, 300)}`);
+    throw new Error("AI provider returned non-JSON response");
   }
 
   const answer =
-    data?.answer ??
     data?.response ??
+    data?.answer ??
     data?.result ??
     data?.message ??
     "";
 
   if (typeof answer !== "string" || !answer.trim()) {
-    throw new Error("Local AI API returned empty answer");
+    throw new Error("AI provider returned empty response");
   }
 
   return answer.trim();
 }
 
 async function createChatCompletion(params: ChatCreateParams): Promise<ChatCreateResult> {
+  if (!AI_PROVIDER_URLS.length) {
+    throw new Error("No AI_PROVIDER_URLS configured");
+  }
+
   const prompt = buildPrompt(params.messages);
+  const errors: string[] = [];
 
-  console.log("[ai-local] sending prompt to:", LOCAL_AI_API_URL);
-  console.log("[ai-local] prompt length:", prompt.length);
+  for (const providerUrl of AI_PROVIDER_URLS) {
+    try {
+      console.log("[ai] trying:", providerUrl);
+      const answer = await callProvider(providerUrl, prompt);
+      console.log("[ai] success:", providerUrl);
+      return {
+        choices: [{ message: { content: answer } }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${providerUrl}: ${message}`);
+      console.log("[ai] failed:", providerUrl, message);
+      continue;
+    }
+  }
 
-  const answer = await callLocalAi(prompt);
-
-  console.log("[ai-local] received answer length:", answer.length);
-
-  return {
-    choices: [
-      {
-        message: {
-          content: answer,
-        },
-      },
-    ],
-  };
+  throw new Error(`All AI providers failed. Tried: ${errors.join(" | ")}`);
 }
 
 export const aiClient = {
@@ -121,7 +110,7 @@ export const aiClient = {
   },
 } as const;
 
-export const AI_MODEL = "local-api";
+export const AI_MODEL = "http-wrapper";
 export const AI_SUPPORTS_VISION = false;
 
 export type { AIMessage };
