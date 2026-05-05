@@ -212,8 +212,8 @@ ${existingCtx}`,
 
   const response = await openai.chat.completions.create({
     model: AI_MODEL,
-    max_completion_tokens: 16000,
-    temperature: 0.5,
+    max_completion_tokens: 1500,
+    temperature: 0.3,
     messages: callMessages,
   });
 
