@@ -216,7 +216,36 @@ ${existingCtx}`,
     temperature: 0.3,
     messages: callMessages,
   });
+  const MAX_PER_REQUEST = 10;
+  let finalQuestions = [];
 
+  while (finalQuestions.length < count) {
+
+    const needed = Math.min(MAX_PER_REQUEST, count - finalQuestions.length);
+
+    const response = await aiClient.chat.completions.create({
+      model: AI_MODEL,
+      messages: callMessages,
+      max_completion_tokens: 1500,
+      temperature: 0.3,
+    });
+
+    const raw = response.choices[0]?.message?.content || "";
+
+    const start = raw.indexOf("[");
+    const end = raw.lastIndexOf("]");
+
+    if (start !== -1 && end !== -1) {
+      try {
+        const parsed = JSON.parse(raw.slice(start, end + 1));
+        finalQuestions.push(...parsed);
+      } catch {}
+    }
+
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  return finalQuestions;
   const raw = response.choices[0]?.message?.content ?? "[]";
 
   let cleaned = raw
