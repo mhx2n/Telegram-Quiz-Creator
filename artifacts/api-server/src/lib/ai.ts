@@ -198,7 +198,21 @@ async function callProvider(url: string, prompt: string): Promise<string> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        prompt,
+        prompt: `
+Return ONLY valid JSON array.
+
+Example:
+[
+  {
+    "question":"...",
+    "options":["A","B","C","D"],
+    "correctOptionIndex":0,
+    "explanation":"..."
+  }
+]
+
+${prompt}
+`,
       }),
       signal: controller.signal,
     });
@@ -210,6 +224,7 @@ async function callProvider(url: string, prompt: string): Promise<string> {
     }
 
     try {
+
       const data = JSON.parse(raw);
 
       const text =
@@ -220,7 +235,7 @@ async function callProvider(url: string, prompt: string): Promise<string> {
         raw;
 
       if (!text || String(text).trim().length < 20) {
-        throw new Error("Empty or weak response");
+        throw new Error("Empty provider response");
       }
 
       return String(text).trim();
