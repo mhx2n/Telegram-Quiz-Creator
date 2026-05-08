@@ -187,39 +187,46 @@ function normalizeQuizResponse(raw: string): string | null {
 
 async function callProvider(url: string, prompt: string): Promise<string> {
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      prompt,
-    }),
+  const full = new URL(url);
+  full.searchParams.set("prompt", prompt);
+
+  const raw = await fetchText(full.toString(), {
+    method: "GET",
   });
 
-  const data = await res.json();
+  let data: any;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = raw;
+  }
 
   let text =
     data?.response ||
     data?.answer ||
     data?.result ||
     data?.message ||
+    data ||
     "";
 
-  if (!text) {
-    throw new Error("empty");
+  if (typeof text !== "string") {
+    text = JSON.stringify(text);
   }
 
-  // remove markdown
   text = text
     .replace(/```json/g, "")
     .replace(/```/g, "")
     .trim();
 
-  // if stringified json
+  // escaped json parse
   try {
 
     const parsed = JSON.parse(text);
+
+    if (Array.isArray(parsed)) {
+      return JSON.stringify(parsed);
+    }
 
     if (typeof parsed === "string") {
       text = parsed;
@@ -227,7 +234,14 @@ async function callProvider(url: string, prompt: string): Promise<string> {
 
   } catch {}
 
-  return text;
+  // final validation
+  const normalized = normalizeQuizResponse(text);
+
+  if (!normalized) {
+    throw new Error("invalid quiz JSON");
+  }
+
+  return normalized;
 }
 
 async function callGroq(prompt: string): Promise<string> {
