@@ -187,66 +187,47 @@ function normalizeQuizResponse(raw: string): string | null {
 
 async function callProvider(url: string, prompt: string): Promise<string> {
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+    }),
+  });
 
+  const data = await res.json();
+
+  let text =
+    data?.response ||
+    data?.answer ||
+    data?.result ||
+    data?.message ||
+    "";
+
+  if (!text) {
+    throw new Error("empty");
+  }
+
+  // remove markdown
+  text = text
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
+
+  // if stringified json
   try {
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        prompt: `
-Return ONLY valid JSON array.
+    const parsed = JSON.parse(text);
 
-Example:
-[
-  {
-    "question":"...",
-    "options":["A","B","C","D"],
-    "correctOptionIndex":0,
-    "explanation":"..."
-  }
-]
-
-${prompt}
-`,
-      }),
-      signal: controller.signal,
-    });
-
-    const raw = await res.text();
-
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300)}`);
+    if (typeof parsed === "string") {
+      text = parsed;
     }
 
-    try {
+  } catch {}
 
-      const data = JSON.parse(raw);
-
-      const text =
-        data?.response ||
-        data?.answer ||
-        data?.result ||
-        data?.message ||
-        raw;
-
-      if (!text || String(text).trim().length < 20) {
-        throw new Error("Empty provider response");
-      }
-
-      return String(text).trim();
-
-    } catch {
-      return raw.trim();
-    }
-
-  } finally {
-    clearTimeout(timeout);
-  }
+  return text;
 }
 
 async function callGroq(prompt: string): Promise<string> {
@@ -325,54 +306,76 @@ async function callGemini(prompt: string): Promise<string> {
 async function createChatCompletion(
   params: ChatCreateParams
 ): Promise<ChatCreateResult> {
-  const prompt = buildQuizPrompt(params.messages);
-  const errors: string[] = [];
 
-  for (const url of AI_PROVIDER_URLS) {
-    try {
-      console.log("TRY PROVIDER:", url);
-      const res = await callProvider(url, prompt);
-      const normalized = normalizeQuizResponse(res);
+  const prompt = buildPrompt(params.messages);
 
-      if (normalized) {
-        return { choices: [{ message: { content: normalized } }] };
+  // provider list one by one
+  const providers = [
+
+    async () => {
+      for (const url of AI_PROVIDER_URLS) {
+        try {
+          console.log("TRY PROVIDER:", url);
+
+          const res = await callProvider(url, prompt);
+
+          // valid json check
+          JSON.parse(res);
+
+          return res;
+
+        } catch (e) {
+          console.log("Provider failed");
+        }
       }
 
-      errors.push(`${url}: invalid quiz JSON`);
+      throw new Error("provider failed");
+    },
+
+    async () => {
+      console.log("TRY GROQ");
+
+      const res = await callGroq(prompt);
+
+      JSON.parse(res);
+
+      return res;
+    },
+
+    async () => {
+      console.log("TRY GEMINI");
+
+      const res = await callGemini(prompt);
+
+      JSON.parse(res);
+
+      return res;
+    }
+
+  ];
+
+  // sequential fallback
+  for (const provider of providers) {
+    try {
+
+      const result = await provider();
+
+      return {
+        choices: [
+          {
+            message: {
+              content: result
+            }
+          }
+        ]
+      };
+
     } catch (e) {
-      errors.push(`${url}: ${e instanceof Error ? e.message : String(e)}`);
+      console.log("fallback next...");
     }
   }
 
-  try {
-    console.log("TRY GROQ");
-    const res = await callGroq(prompt);
-    const normalized = normalizeQuizResponse(res);
-
-    if (normalized) {
-      return { choices: [{ message: { content: normalized } }] };
-    }
-
-    errors.push("groq: invalid quiz JSON");
-  } catch (e) {
-    errors.push(`groq: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  try {
-    console.log("TRY GEMINI");
-    const res = await callGemini(prompt);
-    const normalized = normalizeQuizResponse(res);
-
-    if (normalized) {
-      return { choices: [{ message: { content: normalized } }] };
-    }
-
-    errors.push("gemini: invalid quiz JSON");
-  } catch (e) {
-    errors.push(`gemini: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  throw new Error(`ALL AI FAILED ❌ ${errors.join(" | ")}`);
+  throw new Error("ALL AI FAILED ❌");
 }
 
 export const aiClient = {
