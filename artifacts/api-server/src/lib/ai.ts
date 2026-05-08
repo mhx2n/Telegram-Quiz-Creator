@@ -22,30 +22,172 @@ const GEMINI_API_KEYS = (process.env.GEMINI_API_KEYS ?? "")
   .map((k) => k.trim())
   .filter(Boolean);
 
-// 🔧 prompt builder
+const REQUEST_TIMEOUT_MS = 15000;
+
 function buildPrompt(messages: AIMessage[]): string {
-  return messages.map((m) => `${m.role}: ${m.content}`).join("\n");
+  return messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n");
 }
 
-// =====================
-// 1️⃣ PROVIDER CALL
-// =====================
+function buildQuizPrompt(messages: AIMessage[]): string {
+  const base = buildPrompt(messages);
+
+  return `
+Return ONLY valid JSON array. No markdown. No code fences. No explanation.
+
+Format:
+[
+  {
+    "question": "Question text",
+    "options": ["A", "B", "C", "D"],
+    "correctOptionIndex": 0,
+    "explanation": "Short explanation"
+  }
+]
+
+Rules:
+- Exactly 4 options per question
+- correctOptionIndex must be 0-3
+- Use plain text JSON only
+- If you cannot comply, still return a JSON array
+
+${base}
+`.trim();
+}
+
+async function fetchText(url: string, init: RequestInit): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+
+    const raw = await res.text();
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300)}`);
+    }
+
+    return raw;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function stripCodeFences(text: string): string {
+  return text
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function extractJsonCandidate(text: string): string | null {
+  const cleaned = stripCodeFences(text);
+
+  const arrStart = cleaned.indexOf("[");
+  const arrEnd = cleaned.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd !== -1 && arrEnd > arrStart) {
+    return cleaned.slice(arrStart, arrEnd + 1);
+  }
+
+  const objStart = cleaned.indexOf("{");
+  const objEnd = cleaned.lastIndexOf("}");
+  if (objStart !== -1 && objEnd !== -1 && objEnd > objStart) {
+    return cleaned.slice(objStart, objEnd + 1);
+  }
+
+  return cleaned;
+}
+
+function parseQuizItems(raw: string): unknown[] | null {
+  const candidate = extractJsonCandidate(raw);
+  if (!candidate) return null;
+
+  try {
+    const parsed = JSON.parse(candidate);
+
+    if (Array.isArray(parsed)) return parsed;
+
+    if (parsed && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      for (const key of ["questions", "items", "data", "result"]) {
+        const value = obj[key];
+        if (Array.isArray(value)) return value;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeQuizResponse(raw: string): string | null {
+  const items = parseQuizItems(raw);
+  if (!items || !items.length) return null;
+
+  const normalized = items
+    .map((item) => {
+      const q = item as Record<string, unknown>;
+
+      const question = String(q.question ?? q.q ?? "").trim();
+      const optionsRaw = q.options ?? q.choices ?? q.answers ?? [];
+      const explanation = typeof q.explanation === "string" ? q.explanation.trim() : "";
+
+      const options = Array.isArray(optionsRaw)
+        ? optionsRaw.map((v) => String(v).trim()).filter(Boolean)
+        : [];
+
+      if (!question || options.length < 4) return null;
+
+      let correctOptionIndex = -1;
+
+      const idx = q.correctOptionIndex ?? q.correct_index;
+      if (Number.isInteger(idx)) {
+        correctOptionIndex = Number(idx);
+      }
+
+      if (correctOptionIndex < 0) {
+        const answerText = String(q.correctAnswer ?? q.answer ?? "").trim().toLowerCase();
+        if (answerText) {
+          correctOptionIndex = options.findIndex(
+            (o) => o.trim().toLowerCase() === answerText
+          );
+        }
+      }
+
+      if (correctOptionIndex < 0 || correctOptionIndex > 3) {
+        correctOptionIndex = 0;
+      }
+
+      return {
+        question,
+        options: options.slice(0, 4),
+        correctOptionIndex,
+        explanation,
+      };
+    })
+    .filter(Boolean);
+
+  if (!normalized.length) return null;
+
+  return JSON.stringify(normalized);
+}
+
 async function callProvider(url: string, prompt: string): Promise<string> {
   const full = new URL(url);
   full.searchParams.set("prompt", prompt);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
-  const res = await fetch(full.toString(), {
-    signal: controller.signal,
+  const raw = await fetchText(full.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" },
   });
-
-  clearTimeout(timeout);
-  const raw = await res.text();
 
   try {
     const data = JSON.parse(raw);
+
     const text =
       data?.response ||
       data?.answer ||
@@ -53,26 +195,20 @@ async function callProvider(url: string, prompt: string): Promise<string> {
       data?.message ||
       raw;
 
-    if (!text || text.trim().length < 20) {
+    if (!text || String(text).trim().length < 20) {
       throw new Error("Empty or weak response");
     }
 
-    return text;
+    return String(text).trim();
   } catch {
-    return raw; // fallback
+    return raw.trim();
   }
 }
 
-// =====================
-// 2️⃣ GROQ CALL
-// =====================
 async function callGroq(prompt: string): Promise<string> {
   if (!GROQ_API_KEY) throw new Error("No GROQ key");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const raw = await fetchText("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -80,101 +216,104 @@ async function callGroq(prompt: string): Promise<string> {
     },
     body: JSON.stringify({
       model: "llama3-70b-8192",
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.2,
     }),
-    signal: controller.signal,
   });
 
-  clearTimeout(timeout);
+  const data = JSON.parse(raw);
+  const text = data?.choices?.[0]?.message?.content || "";
 
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || "";
-
-  if (!text || text.length < 20) {
+  if (!text || String(text).trim().length < 20) {
     throw new Error("Groq empty");
   }
 
-  return text;
+  return String(text).trim();
 }
 
-// =====================
-// 3️⃣ GEMINI CALL
-// =====================
 async function callGemini(prompt: string): Promise<string> {
   if (!GEMINI_API_KEYS.length) throw new Error("No Gemini key");
 
   const key = GEMINI_API_KEYS[Math.floor(Math.random() * GEMINI_API_KEYS.length)];
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`,
+  const raw = await fetchText(
+    `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key=${key}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        model: "gemini-2.0-flash",
+        messages: [
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
       }),
-      signal: controller.signal,
     }
   );
 
-  clearTimeout(timeout);
+  const data = JSON.parse(raw);
+  const text = data?.choices?.[0]?.message?.content || data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-  if (!text || text.length < 20) {
+  if (!text || String(text).trim().length < 20) {
     throw new Error("Gemini empty");
   }
 
-  return text;
+  return String(text).trim();
 }
-// =====================
-// 🚀 MAIN FALLBACK FLOW
-// =====================
+
 async function createChatCompletion(
   params: ChatCreateParams
 ): Promise<ChatCreateResult> {
-  const prompt = buildPrompt(params.messages);
+  const prompt = buildQuizPrompt(params.messages);
+  const errors: string[] = [];
 
-  // 1️⃣ Provider
   for (const url of AI_PROVIDER_URLS) {
     try {
       console.log("TRY PROVIDER:", url);
       const res = await callProvider(url, prompt);
-      if (res && res.includes("question")) {
-        return { choices: [{ message: { content: res } }] };
+      const normalized = normalizeQuizResponse(res);
+
+      if (normalized) {
+        return { choices: [{ message: { content: normalized } }] };
       }
+
+      errors.push(`${url}: invalid quiz JSON`);
     } catch (e) {
-      console.log("Provider failed");
+      errors.push(`${url}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  // 2️⃣ Groq
   try {
     console.log("TRY GROQ");
     const res = await callGroq(prompt);
-    if (res && res.includes("question")) {
-      return { choices: [{ message: { content: res } }] };
+    const normalized = normalizeQuizResponse(res);
+
+    if (normalized) {
+      return { choices: [{ message: { content: normalized } }] };
     }
-  } catch {
-    console.log("Groq failed");
+
+    errors.push("groq: invalid quiz JSON");
+  } catch (e) {
+    errors.push(`groq: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // 3️⃣ Gemini
   try {
     console.log("TRY GEMINI");
     const res = await callGemini(prompt);
-    if (res && res.includes("question")) {
-      return { choices: [{ message: { content: res } }] };
+    const normalized = normalizeQuizResponse(res);
+
+    if (normalized) {
+      return { choices: [{ message: { content: normalized } }] };
     }
-  } catch {
-    console.log("Gemini failed");
+
+    errors.push("gemini: invalid quiz JSON");
+  } catch (e) {
+    errors.push(`gemini: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  throw new Error("ALL AI FAILED ❌");
+  throw new Error(`ALL AI FAILED ❌ ${errors.join(" | ")}`);
 }
 
 export const aiClient = {
