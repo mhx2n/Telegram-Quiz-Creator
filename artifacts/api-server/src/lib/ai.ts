@@ -150,6 +150,24 @@ function normalizeQuizResponse(raw: string): string | null {
         : [];
 
       if (!question || options.length < 4) return null;
+      // bad/system prompt filter
+      const badPatterns = [
+        "system:",
+        "return only valid json",
+        "correctoptionindex",
+        "json array",
+        "you are an expert",
+        "markdown",
+        "code fence",
+      ];
+
+      const lowerQuestion = question.toLowerCase();
+
+      if (
+        badPatterns.some((p) => lowerQuestion.includes(p))
+      ) {
+        return null;
+      }
 
       let correctOptionIndex = -1;
 
