@@ -32,8 +32,17 @@ function buildQuizPrompt(messages: AIMessage[]): string {
   const base = buildPrompt(messages);
 
   return `
-Return ONLY valid JSON array. No markdown. No code fences. No explanation.
+Return ONLY valid JSON array. No markdown. No code fences. No explanation. No code block.
 
+Example:
+[
+  {
+    "question":"...",
+    "options":["A","B","C","D"],
+    "correctOptionIndex":0,
+    "explanation":"..."
+  }
+]
 Format:
 [
   {
@@ -177,14 +186,16 @@ function normalizeQuizResponse(raw: string): string | null {
 }
 
 async function callProvider(url: string, prompt: string): Promise<string> {
-  const full = new URL(url);
-  full.searchParams.set("prompt", prompt);
-
-  const raw = await fetchText(full.toString(), {
-    method: "GET",
-    headers: { Accept: "application/json" },
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+    }),
+    signal: controller.signal,
   });
-
   try {
     const data = JSON.parse(raw);
 
@@ -215,7 +226,7 @@ async function callGroq(prompt: string): Promise<string> {
       Authorization: `Bearer ${GROQ_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "llama3-70b-8192",
+      model: "llama-3.3-70b-versatile",
       messages: [
         { role: "user", content: prompt },
       ],
@@ -234,33 +245,48 @@ async function callGroq(prompt: string): Promise<string> {
 }
 
 async function callGemini(prompt: string): Promise<string> {
-  if (!GEMINI_API_KEYS.length) throw new Error("No Gemini key");
+  if (!GEMINI_API_KEYS.length) {
+    throw new Error("No Gemini key");
+  }
 
-  const key = GEMINI_API_KEYS[Math.floor(Math.random() * GEMINI_API_KEYS.length)];
+  const key =
+    GEMINI_API_KEYS[
+      Math.floor(Math.random() * GEMINI_API_KEYS.length)
+    ];
 
-  const raw = await fetchText(
-    `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key=${key}`,
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
-        model: "gemini-2.0-flash",
-        messages: [
-          { role: "user", content: prompt },
+        contents: [
+          {
+            parts: [{ text: prompt }],
+          },
         ],
-        temperature: 0.2,
       }),
+      signal: controller.signal,
     }
   );
 
-  const data = JSON.parse(raw);
-  const text = data?.choices?.[0]?.message?.content || data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  clearTimeout(timeout);
 
-  if (!text || String(text).trim().length < 20) {
+  const data = await res.json();
+
+  const text =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  if (!text || text.length < 20) {
     throw new Error("Gemini empty");
   }
 
-  return String(text).trim();
+  return text;
 }
 
 async function createChatCompletion(
