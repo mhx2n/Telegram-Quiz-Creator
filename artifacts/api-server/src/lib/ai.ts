@@ -186,33 +186,51 @@ function normalizeQuizResponse(raw: string): string | null {
 }
 
 async function callProvider(url: string, prompt: string): Promise<string> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      prompt,
-    }),
-    signal: controller.signal,
-  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   try {
-    const data = JSON.parse(raw);
 
-    const text =
-      data?.response ||
-      data?.answer ||
-      data?.result ||
-      data?.message ||
-      raw;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt,
+      }),
+      signal: controller.signal,
+    });
 
-    if (!text || String(text).trim().length < 20) {
-      throw new Error("Empty or weak response");
+    const raw = await res.text();
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300)}`);
     }
 
-    return String(text).trim();
-  } catch {
-    return raw.trim();
+    try {
+      const data = JSON.parse(raw);
+
+      const text =
+        data?.response ||
+        data?.answer ||
+        data?.result ||
+        data?.message ||
+        raw;
+
+      if (!text || String(text).trim().length < 20) {
+        throw new Error("Empty or weak response");
+      }
+
+      return String(text).trim();
+
+    } catch {
+      return raw.trim();
+    }
+
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
