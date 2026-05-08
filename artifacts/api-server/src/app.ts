@@ -6,6 +6,13 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "Telegram Quiz Creator API",
+  });
+});
+
 app.use(
   pinoHttp({
     logger,
