@@ -5,7 +5,7 @@
   "installCommand": "pnpm install",
   "framework": null,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://telegram-quiz-creator.onrender.com/api/$1" },
+    { "source": "/api/(.*)", "destination": "https://telegram-quiz-creator-p1mx.onrender.com/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
